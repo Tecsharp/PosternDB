@@ -1,0 +1,101 @@
+name: posterndb
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # scram-sha-256 for every connection, including the initial superuser.
+      POSTGRES_INITDB_ARGS: --auth=scram-sha-256
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    command:
+      - postgres
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - log_connections=on
+    # SECURITY: no "ports:" section on purpose. 5432 is reachable only on the
+    # internal Docker network (by the app, the backup sidecar and cloudflared).
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    image: posterndb:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      HTTP_ADDR: ":8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Loopback only: lets the operator open http://127.0.0.1:28437 on the host
+    # (and lets setup.sh wait for /health) without exposing the panel to the
+    # LAN or internet. Public access goes exclusively through the tunnel.
+    ports:
+      - "127.0.0.1:${PANEL_LOCAL_PORT:-28437}:8080"
+    # Read-only: the panel serves downloads; the backup sidecar writes files.
+    volumes:
+      - backups:/backups:ro
+    networks: [internal, egress]
+    healthcheck:
+      test: ["CMD", "/posterndb", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # The token is read from the environment, never passed on the command
+    # line, so it does not show up in `docker ps` or process listings.
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      app:
+        condition: service_healthy
+    networks: [internal, egress]
+
+  # Job runner for everything that needs pg_dump/pg_restore: manual backups,
+  # archives of expired/deleted databases, restores and clones. The app queues
+  # work in the "jobs" table. See backup/backup.sh.
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      BACKUP_POLL_SECONDS: ${BACKUP_POLL_SECONDS:-5}
+    volumes:
+      - ./backup/backup.sh:/backup.sh:ro
+      - backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [internal]
+
+volumes:
+  pgdata:
+  backups:
+
+networks:
+  # No internet access: the database and backup sidecar never talk outside.
+  internal:
+    internal: true
+  # Outbound access for the Cloudflare API (app) and the tunnel (cloudflared).
+  egress:
