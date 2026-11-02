@@ -1,0 +1,15 @@
+# Local mode (LOCAL_MODE=true in .env): no Cloudflare at all.
+# setup.sh adds this file automatically; by hand:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+services:
+  db:
+    # Published on the loopback interface only: reachable from this machine,
+    # never from the LAN or the internet.
+    ports:
+      - "127.0.0.1:${LOCAL_DB_PORT:-25432}:5432"
+    # Port publishing needs a non-internal network.
+    networks: [internal, egress]
+
+  tunnel:
+    # Never started in local mode.
+    profiles: [cloudflare]

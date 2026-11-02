@@ -1,0 +1,24 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# build output
+/bin/
+web/dist/*
+!web/dist/.gitkeep
+web/node_modules/
+
+# test / analysis
+coverage.out
+coverage.html
+test-report.json
+.scannerwork/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# local tooling
+.claude/
