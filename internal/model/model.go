@@ -1,0 +1,202 @@
+// Package model holds the domain types shared by the store, the provisioning
+// service, the auditor and the HTTP layer.
+package model
+
+import (
+	"errors"
+	"time"
+)
+
+// Domain errors translated to HTTP status codes by the API layer.
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("already exists")
+)
+
+// ClientDatabase is one row of the client_databases metadata table.
+type ClientDatabase struct {
+	ID         int64      `json:"id"`
+	Slug       string     `json:"slug"`
+	DBName     string     `json:"database"`
+	RoleName   string     `json:"username"`
+	Hostname   string     `json:"hostname"`
+	State      string     `json:"state"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastSeenAt time.Time  `json:"lastSeenAt"`
+	ExpiredAt  *time.Time `json:"expiredAt,omitempty"`
+	ArchivedAs string     `json:"archivedAs,omitempty"`
+	// SessionsBaseline is the pg_stat_database.sessions counter observed in
+	// the previous audit run. A higher value now means new connections were
+	// opened in between, even if none is open at the moment of the check.
+	SessionsBaseline int64 `json:"-"`
+	// InternalSessions counts sessions PosternDB opened itself; the delta
+	// since InternalBaseline is subtracted from new client sessions.
+	InternalSessions int64      `json:"-"`
+	InternalBaseline int64      `json:"-"`
+	NeverExpires     bool       `json:"neverExpires"`
+	MaxIdleDays      *int       `json:"maxIdleDays,omitempty"`
+	GraceUntil       *time.Time `json:"graceUntil,omitempty"`
+	ExpiryWarnedAt   *time.Time `json:"-"`
+}
+
+// AuditEntry is one row of audit_log.
+type AuditEntry struct {
+	ID         int64          `json:"id"`
+	OccurredAt time.Time      `json:"occurredAt"`
+	Actor      string         `json:"actor"`
+	Action     string         `json:"action"`
+	Target     string         `json:"target"`
+	Details    map[string]any `json:"details,omitempty"`
+}
+
+// Activity is the per-database activity snapshot read from PostgreSQL
+// statistics views.
+type Activity struct {
+	// Connections currently open (pg_stat_activity, client backends only).
+	Connections int64
+	// Sessions is the cumulative pg_stat_database.sessions counter.
+	Sessions int64
+}
+
+// Admin is a panel administrator stored in the database. The bootstrap
+// ADMIN_USER from .env is not stored and always has the owner role.
+type Admin struct {
+	ID           int64      `json:"id"`
+	Username     string     `json:"username"`
+	PasswordHash string     `json:"-"`
+	Role         string     `json:"role"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	CreatedBy    string     `json:"createdBy"`
+	LastLoginAt  *time.Time `json:"lastLoginAt,omitempty"`
+	Bootstrap    bool       `json:"bootstrap"`
+}
+
+// DatabaseUser is an additional login role attached to a client database.
+type DatabaseUser struct {
+	ID         int64     `json:"id"`
+	DatabaseID int64     `json:"-"`
+	Name       string    `json:"name"`
+	RoleName   string    `json:"username"`
+	Access     string    `json:"access"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
+// Job is a unit of work for the backup sidecar.
+type Job struct {
+	ID          int64      `json:"id"`
+	Kind        string     `json:"kind"`
+	Status      string     `json:"status"`
+	Slug        string     `json:"slug"`
+	SourceDB    string     `json:"sourceDb,omitempty"`
+	TargetDB    string     `json:"targetDb,omitempty"`
+	TargetRole  string     `json:"-"`
+	File        string     `json:"file,omitempty"`
+	Bytes       *int64     `json:"bytes,omitempty"`
+	Reason      string     `json:"reason,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	RequestedBy string     `json:"requestedBy"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
+}
+
+// Template is reusable SQL applied to new databases.
+type Template struct {
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SQL         string    `json:"sql"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// DatabaseStats summarises size and usage of one client database.
+type DatabaseStats struct {
+	SizeBytes       int64        `json:"sizeBytes"`
+	OpenConnections int64        `json:"openConnections"`
+	TotalSessions   int64        `json:"totalSessions"`
+	Commits         int64        `json:"commits"`
+	Rollbacks       int64        `json:"rollbacks"`
+	TableCount      int          `json:"tableCount"`
+	TotalRows       int64        `json:"totalRows"`
+	TopTables       []TableBrief `json:"topTables"`
+}
+
+// TableBrief is one row of the "largest tables" list.
+type TableBrief struct {
+	Schema    string `json:"schema"`
+	Name      string `json:"name"`
+	Rows      int64  `json:"rows"`
+	SizeBytes int64  `json:"sizeBytes"`
+}
+
+// Schema is the structure of a client database, used by the tree view and
+// the entity-relationship diagram.
+type Schema struct {
+	Schemas []string `json:"schemas"`
+	Tables  []Table  `json:"tables"`
+}
+
+// Table describes one table or view.
+type Table struct {
+	Schema      string       `json:"schema"`
+	Name        string       `json:"name"`
+	Kind        string       `json:"kind"`
+	Rows        int64        `json:"rows"`
+	SizeBytes   int64        `json:"sizeBytes"`
+	Comment     string       `json:"comment,omitempty"`
+	Columns     []Column     `json:"columns"`
+	ForeignKeys []ForeignKey `json:"foreignKeys"`
+	Indexes     []Index      `json:"indexes"`
+}
+
+// Column describes one table column.
+type Column struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Nullable   bool   `json:"nullable"`
+	Default    string `json:"default,omitempty"`
+	PrimaryKey bool   `json:"primaryKey"`
+}
+
+// ForeignKey links columns of one table to another table.
+type ForeignKey struct {
+	Name       string   `json:"name"`
+	Columns    []string `json:"columns"`
+	RefSchema  string   `json:"refSchema"`
+	RefTable   string   `json:"refTable"`
+	RefColumns []string `json:"refColumns"`
+}
+
+// Index describes one index.
+type Index struct {
+	Name       string `json:"name"`
+	Definition string `json:"definition"`
+	Unique     bool   `json:"unique"`
+}
+
+// QueryResult is the output of a read-only console query.
+type QueryResult struct {
+	Columns    []string `json:"columns"`
+	Rows       [][]any  `json:"rows"`
+	RowCount   int      `json:"rowCount"`
+	Truncated  bool     `json:"truncated"`
+	DurationMs int64    `json:"durationMs"`
+}
+
+// ConnectionInfo is everything a client needs to connect, minus the
+// password. The panel builds every connection snippet from it.
+type ConnectionInfo struct {
+	Hostname  string `json:"hostname"`
+	Database  string `json:"database"`
+	Username  string `json:"username"`
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	LocalMode bool   `json:"localMode"`
+}
+
+// Credentials are returned exactly once, right after a database (or a
+// database user) is created or its password is reset. PosternDB never
+// stores the password.
+type Credentials struct {
+	ConnectionInfo
+	Password string `json:"password"`
+}
