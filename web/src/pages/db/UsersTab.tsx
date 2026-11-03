@@ -21,13 +21,13 @@ export function UsersTab({ db, session }: TabProps) {
         actions={
           operate && (
             <Button size="sm" variant="primary" onClick={() => setAdding(true)}>
-              <UserPlusRoundedIcon size={15} aria-hidden />
+              <UserPlusRoundedIcon size={17} aria-hidden />
               Agregar usuario
             </Button>
           )
         }
       >
-        <p className="px-4 py-3 text-[13px] text-ink-2">
+        <p className="px-4 py-3 text-[0.95rem] text-ink-2">
           Además de <span className="font-mono text-ink">{db.username}</span> (dueño), puedes dar acceso de solo lectura, por ejemplo para un analista, o de
           lectura y escritura sin permisos para borrar tablas.
         </p>
@@ -40,8 +40,8 @@ export function UsersTab({ db, session }: TabProps) {
             {data.map((u) => (
               <li key={u.id} className="flex flex-wrap items-center gap-3 px-5 py-3">
                 <div className="min-w-0 flex-1">
-                  <p className="font-mono text-[13px] font-semibold">{u.username}</p>
-                  <p className="text-[12px] text-ink-2">Creado el {formatDate(u.createdAt)}</p>
+                  <p className="font-mono text-[0.95rem] font-semibold">{u.username}</p>
+                  <p className="text-[0.85rem] text-ink-2">Creado el {formatDate(u.createdAt)}</p>
                 </div>
                 <Tag tone={u.access === 'write' ? 'warn' : 'accent'}>{u.access === 'write' ? 'Lectura y escritura' : 'Solo lectura'}</Tag>
                 {operate && (
@@ -120,18 +120,18 @@ function AddUserSheet({ open, slug, onClose, onCreated }: { open: boolean; slug:
           <label className="block">
             <span className="label">Nombre corto</span>
             <input className="field font-mono" autoFocus required placeholder="bi" value={name} aria-invalid={invalid ? 'true' : 'false'} aria-describedby="user-help" onChange={(e) => setName(e.target.value)} />
-            <span id="user-help" className={`mt-1.5 block text-[12px] ${invalid ? 'text-danger' : 'text-ink-2'}`}>
+            <span id="user-help" className={`mt-1.5 block text-[0.85rem] ${invalid ? 'text-danger' : 'text-ink-2'}`}>
               {invalid ? 'Empieza con una letra; 2 a 16 caracteres a-z o 0-9.' : <>El usuario será <span className="font-mono text-ink">pdb_{slug.replaceAll('-', '_')}__{clean || 'nombre'}</span></>}
             </span>
           </label>
           <fieldset>
             <legend className="label">Acceso</legend>
             {(['read', 'write'] as Access[]).map((a) => (
-              <label key={a} className="flex items-start gap-2.5 py-1.5 text-[13px]">
+              <label key={a} className="flex items-start gap-2.5 py-1.5 text-[0.95rem]">
                 <input type="radio" name="access" className="mt-0.5 accent-[var(--accent)]" checked={access === a} onChange={() => setAccess(a)} />
                 <span>
                   <span className="font-semibold">{a === 'read' ? 'Solo lectura' : 'Lectura y escritura'}</span>
-                  <span className="block text-[12px] text-ink-2">
+                  <span className="block text-[0.85rem] text-ink-2">
                     {a === 'read' ? 'SELECT en todas las tablas, incluidas las futuras.' : 'SELECT, INSERT, UPDATE y DELETE. No puede crear ni borrar tablas.'}
                   </span>
                 </span>

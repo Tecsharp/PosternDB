@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 // The diagram pulls in React Flow and dagre; load it only when needed.
 const SchemaDiagram = lazy(() => import('../../components/SchemaDiagram'))
 import { AltArrowDownIcon, AltArrowRightIcon, DiagramDownIcon, EyeIcon, KeyMinimalisticIcon, LinkMinimalistic2Icon, ListIcon, MagnifierIcon, TableIcon } from '@solar-icons/react/linear'
-import { api, can, type Table } from '../../api'
+import { api, can, type QueryResult, type Schema, type Table } from '../../api'
 import { lazy, Suspense } from 'react'
 import { tableKey } from '../../components/schemaKey'
 import { Button, EmptyState, ErrorNote, Loading, Panel, segmentClass, Tag, useAction, useLoad } from '../../components/ui'
@@ -13,8 +13,25 @@ import { ResultGrid } from './ConsoleTab'
 
 type View = 'diagram' | 'tree'
 
+/** Where the explorer gets its data, so admins and registered users share it. */
+export interface SchemaSource {
+  load: () => Promise<Schema>
+  count: (schema: string, table: string) => Promise<number>
+  /** Absent for registered users: they browse rows in the Datos tab. */
+  preview?: (schema: string, table: string) => Promise<QueryResult>
+}
+
 export function SchemaTab({ db, session }: TabProps) {
-  const { data, error, loading, reload } = useLoad(() => api.schema(db.slug), [db.slug])
+  const source: SchemaSource = {
+    load: () => api.schema(db.slug),
+    count: (schema, table) => api.count(db.slug, schema, table),
+    preview: can.operate(session.role) ? (schema, table) => api.preview(db.slug, schema, table) : undefined,
+  }
+  return <SchemaExplorer slug={db.slug} source={source} />
+}
+
+export function SchemaExplorer({ slug, source }: { slug: string; source: SchemaSource }) {
+  const { data, error, loading, reload } = useLoad(source.load, [slug])
   const [view, setView] = useState<View>('diagram')
   const [selected, setSelected] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
@@ -42,21 +59,21 @@ export function SchemaTab({ db, session }: TabProps) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-[13px] text-ink-2">
+        <p className="text-[0.95rem] text-ink-2">
           {data.tables.length} objetos en {data.schemas.length} {data.schemas.length === 1 ? 'esquema' : 'esquemas'}, {formatNumber(totalRows)} registros aprox.
         </p>
         <div className="flex items-center gap-2">
           <label className="relative">
             <span className="sr-only">Filtrar tablas y columnas</span>
-            <MagnifierIcon size={14} aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-ink-3" />
-            <input className="field h-7 w-56 pl-8 text-[12.5px]" placeholder="Filtrar tablas o columnas" value={filter} onChange={(e) => setFilter(e.target.value)} />
+            <MagnifierIcon size={16} aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-ink-3" />
+            <input className="field h-7 w-56 pl-8 text-[0.9rem]" placeholder="Filtrar tablas o columnas" value={filter} onChange={(e) => setFilter(e.target.value)} />
           </label>
           <div role="group" aria-label="Vista" className="inline-flex rounded-[7px] bg-surface-2 p-0.5">
             <button type="button" aria-pressed={view === 'diagram'} onClick={() => setView('diagram')} className={segmentClass(view === 'diagram')}>
-              <DiagramDownIcon size={14} aria-hidden /> Diagrama
+              <DiagramDownIcon size={16} aria-hidden /> Diagrama
             </button>
             <button type="button" aria-pressed={view === 'tree'} onClick={() => setView('tree')} className={segmentClass(view === 'tree')}>
-              <ListIcon size={14} aria-hidden /> Árbol
+              <ListIcon size={16} aria-hidden /> Árbol
             </button>
           </div>
           <Button size="sm" variant="ghost" onClick={reload}>
@@ -75,7 +92,7 @@ export function SchemaTab({ db, session }: TabProps) {
             <SchemaTree tables={tables} schemas={data.schemas} selected={selected} onSelect={setSelected} />
           )}
         </div>
-        {current && <TableDetail key={tableKey(current)} slug={db.slug} table={current} canRead={can.operate(session.role)} onClose={() => setSelected(null)} />}
+        {current && <TableDetail key={tableKey(current)} table={current} source={source} onClose={() => setSelected(null)} />}
       </div>
     </div>
   )
@@ -93,7 +110,7 @@ function SchemaTree({ tables, schemas, selected, onSelect }: { tables: Table[]; 
     })
 
   return (
-    <div className="max-h-[620px] overflow-y-auto p-3 font-mono text-[12.5px]">
+    <div className="max-h-[620px] overflow-y-auto p-3 font-mono text-[0.9rem]">
       <ul>
         {schemas.map((s) => {
           const inSchema = tables.filter((t) => t.schema === s)
@@ -112,19 +129,19 @@ function SchemaTree({ tables, schemas, selected, onSelect }: { tables: Table[]; 
                       <li key={k}>
                         <div className="flex items-center">
                           <TreeToggle open={open.has(k)} onClick={() => toggle(k)} label={`columnas de ${t.name}`}>
-                            <TableIcon size={14} aria-hidden className="text-ink-3" />
+                            <TableIcon size={16} aria-hidden className="text-ink-3" />
                             <span>{t.name}</span>
                           </TreeToggle>
-                          <span className="ml-auto pr-2 text-[11px] text-ink-3 tabular-nums">{t.kind === 'table' ? formatNumber(t.rows) : t.kind === 'view' ? 'vista' : 'mat.'}</span>
-                          <Button size="sm" variant={selected === k ? 'secondary' : 'ghost'} className="h-6 px-2 text-[11px]" onClick={() => onSelect(k)} aria-pressed={selected === k}>
+                          <span className="ml-auto pr-2 text-[0.78rem] text-ink-3 tabular-nums">{t.kind === 'table' ? formatNumber(t.rows) : t.kind === 'view' ? 'vista' : 'mat.'}</span>
+                          <Button size="sm" variant={selected === k ? 'secondary' : 'ghost'} className="h-6 px-2 text-[0.78rem]" onClick={() => onSelect(k)} aria-pressed={selected === k}>
                             Detalles
                           </Button>
                         </div>
                         {open.has(k) && (
                           <ul className="ml-5 border-l border-line pl-3">
                             {t.columns.map((c) => (
-                              <li key={c.name} className="flex items-center gap-2 py-0.5 text-[12px]">
-                                {c.primaryKey ? <KeyMinimalisticIcon size={12} className="text-accent-text" aria-label="clave primaria" /> : t.foreignKeys.some((f) => f.columns.includes(c.name)) ? <LinkMinimalistic2Icon size={12} className="text-ink-2" aria-label="clave foránea" /> : <span className="w-[11px]" />}
+                              <li key={c.name} className="flex items-center gap-2 py-0.5 text-[0.85rem]">
+                                {c.primaryKey ? <KeyMinimalisticIcon size={14} className="text-accent-text" aria-label="clave primaria" /> : t.foreignKeys.some((f) => f.columns.includes(c.name)) ? <LinkMinimalistic2Icon size={14} className="text-ink-2" aria-label="clave foránea" /> : <span className="w-[11px]" />}
                                 <span>{c.name}</span>
                                 <span className="text-ink-3">{c.type}</span>
                               </li>
@@ -147,15 +164,16 @@ function SchemaTree({ tables, schemas, selected, onSelect }: { tables: Table[]; 
 function TreeToggle({ open, onClick, label, children }: { open: boolean; onClick: () => void; label: string; children: React.ReactNode }) {
   return (
     <button type="button" onClick={onClick} aria-expanded={open} aria-label={`${open ? 'Contraer' : 'Expandir'} ${label}`} className="flex h-7 items-center gap-1.5 rounded-[6px] px-1.5 hover:bg-surface-2">
-      {open ? <AltArrowDownIcon size={13} aria-hidden /> : <AltArrowRightIcon size={13} aria-hidden />}
+      {open ? <AltArrowDownIcon size={15} aria-hidden /> : <AltArrowRightIcon size={15} aria-hidden />}
       {children}
     </button>
   )
 }
 
-function TableDetail({ slug, table, canRead, onClose }: { slug: string; table: Table; canRead: boolean; onClose: () => void }) {
+function TableDetail({ table, source, onClose }: { table: Table; source: SchemaSource; onClose: () => void }) {
   const [exact, setExact] = useState<number | null>(null)
-  const [preview, setPreview] = useState<Awaited<ReturnType<typeof api.preview>> | null>(null)
+  const [preview, setPreview] = useState<QueryResult | null>(null)
+  const previewRows = source.preview
   const counting = useAction()
   const loadingRows = useAction()
 
@@ -163,10 +181,10 @@ function TableDetail({ slug, table, canRead, onClose }: { slug: string; table: T
     <aside className="group-box self-start" aria-label={`Detalles de ${table.name}`}>
       <header className="flex items-start justify-between gap-3 px-4 pt-4 pb-1">
         <div className="min-w-0">
-          <h2 className="truncate font-mono text-[15px] font-semibold">
+          <h2 className="truncate font-mono text-[1.05rem] font-semibold">
             {table.schema}.{table.name}
           </h2>
-          {table.comment && <p className="mt-0.5 text-[12.5px] text-ink-2">{table.comment}</p>}
+          {table.comment && <p className="mt-0.5 text-[0.9rem] text-ink-2">{table.comment}</p>}
           <div className="mt-2 flex flex-wrap gap-1.5">
             <Tag>{table.kind === 'table' ? 'tabla' : table.kind === 'view' ? 'vista' : 'vista materializada'}</Tag>
             {table.kind !== 'view' && <Tag>{formatBytes(table.sizeBytes)}</Tag>}
@@ -179,12 +197,12 @@ function TableDetail({ slug, table, canRead, onClose }: { slug: string; table: T
 
       <div className="space-y-5 px-4 pt-3 pb-4">
         <div className="flex flex-wrap items-center gap-2">
-          <p className="text-[13px]">
-            <span className="font-mono text-[18px] font-semibold tabular-nums">{formatNumber(exact ?? table.rows)}</span>{' '}
+          <p className="text-[0.95rem]">
+            <span className="font-mono text-[1.2rem] font-semibold tabular-nums">{formatNumber(exact ?? table.rows)}</span>{' '}
             <span className="text-ink-2">{exact === null ? 'registros (estimado)' : 'registros (exacto)'}</span>
           </p>
           {exact === null && (
-            <Button size="sm" disabled={counting.busy} onClick={() => counting.run(() => api.count(slug, table.schema, table.name).then(setExact))}>
+            <Button size="sm" disabled={counting.busy} onClick={() => counting.run(() => source.count(table.schema, table.name).then(setExact))}>
               {counting.busy ? 'Contando…' : 'Contar exacto'}
             </Button>
           )}
@@ -192,11 +210,11 @@ function TableDetail({ slug, table, canRead, onClose }: { slug: string; table: T
         {counting.error && <ErrorNote message={counting.error} />}
 
         <section>
-          <h3 className="mb-2 text-[12.5px] font-semibold text-ink-2">Columnas</h3>
-          <ul className="group-rows overflow-hidden rounded-[8px] bg-surface-2 font-mono text-[12px]">
+          <h3 className="mb-2 text-[0.9rem] font-semibold text-ink-2">Columnas</h3>
+          <ul className="group-rows overflow-hidden rounded-[8px] bg-surface-2 font-mono text-[0.85rem]">
             {table.columns.map((c) => (
               <li key={c.name} className="flex items-center gap-2 px-3 py-1.5">
-                {c.primaryKey && <KeyMinimalisticIcon size={12} className="text-accent-text" aria-label="clave primaria" />}
+                {c.primaryKey && <KeyMinimalisticIcon size={14} className="text-accent-text" aria-label="clave primaria" />}
                 <span className={c.primaryKey ? 'font-semibold' : ''}>{c.name}</span>
                 <span className="ml-auto text-ink-2">{c.type}</span>
                 {!c.nullable && <span className="text-ink-3" title="NOT NULL">nn</span>}
@@ -207,8 +225,8 @@ function TableDetail({ slug, table, canRead, onClose }: { slug: string; table: T
 
         {table.foreignKeys.length > 0 && (
           <section>
-            <h3 className="mb-2 text-[12.5px] font-semibold text-ink-2">Relaciones</h3>
-            <ul className="space-y-1 font-mono text-[12px]">
+            <h3 className="mb-2 text-[0.9rem] font-semibold text-ink-2">Relaciones</h3>
+            <ul className="space-y-1 font-mono text-[0.85rem]">
               {table.foreignKeys.map((fk) => (
                 <li key={fk.name}>
                   {fk.columns.join(', ')} <span className="text-ink-3">→</span> {fk.refTable}({fk.refColumns.join(', ')})
@@ -220,8 +238,8 @@ function TableDetail({ slug, table, canRead, onClose }: { slug: string; table: T
 
         {table.indexes.length > 0 && (
           <section>
-            <h3 className="mb-2 text-[12.5px] font-semibold text-ink-2">Índices</h3>
-            <ul className="space-y-1.5 font-mono text-[11.5px] text-ink-2">
+            <h3 className="mb-2 text-[0.9rem] font-semibold text-ink-2">Índices</h3>
+            <ul className="space-y-1.5 font-mono text-[0.82rem] text-ink-2">
               {table.indexes.map((ix) => (
                 <li key={ix.name} className="break-all">
                   {ix.definition}
@@ -231,16 +249,16 @@ function TableDetail({ slug, table, canRead, onClose }: { slug: string; table: T
           </section>
         )}
 
-        {canRead && (
+        {previewRows && (
           <section>
             {!preview ? (
-              <Button size="sm" disabled={loadingRows.busy} onClick={() => loadingRows.run(() => api.preview(slug, table.schema, table.name).then(setPreview))}>
-                <EyeIcon size={14} aria-hidden />
+              <Button size="sm" disabled={loadingRows.busy} onClick={() => loadingRows.run(() => previewRows(table.schema, table.name).then(setPreview))}>
+                <EyeIcon size={16} aria-hidden />
                 {loadingRows.busy ? 'Cargando…' : 'Ver primeras filas'}
               </Button>
             ) : (
               <>
-                <h3 className="mb-2 text-[12.5px] font-semibold text-ink-2">Primeras {preview.rowCount} filas</h3>
+                <h3 className="mb-2 text-[0.9rem] font-semibold text-ink-2">Primeras {preview.rowCount} filas</h3>
                 <ResultGrid result={preview} maxHeight="max-h-72" />
               </>
             )}

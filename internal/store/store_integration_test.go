@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,10 +109,10 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	require.NoError(t, Migrate(context.Background(), pool))
 	var n int
 	require.NoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&n))
-	assert.Equal(t, 2, n)
+	assert.Equal(t, 8, n)
 	var templates int
 	require.NoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM templates").Scan(&templates))
-	assert.Equal(t, 1, templates, "demo template seeded once")
+	assert.Equal(t, 6, templates, "sample templates seeded once, not duplicated by re-running migrations")
 }
 
 func TestOpenTimesOut(t *testing.T) {
@@ -340,4 +341,196 @@ func containsSlug(dbs []model.ClientDatabase, slug string) bool {
 		}
 	}
 	return false
+}
+
+func TestClientUserIDAndClientExpiryOverrides(t *testing.T) {
+	ctx := context.Background()
+	m := NewMetadata(pool)
+
+	ana, err := m.CreateClientUser(ctx, model.NewClientUser{Username: "ana-it", PasswordHash: "hash"})
+	require.NoError(t, err)
+	defer func() { _ = m.DeleteClientUser(ctx, ana.ID) }()
+
+	row, err := m.InsertDatabase(ctx, model.ClientDatabase{
+		Slug: "it-owner", DBName: "pdb_it_owner2", RoleName: "pdb_it_owner2", Hostname: "it-owner.example.com",
+		LastSeenAt: time.Now(), ClientUserID: &ana.ID,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, row.ClientUserID)
+	assert.Equal(t, ana.ID, *row.ClientUserID)
+	got, err := m.GetDatabase(ctx, "it-owner")
+	require.NoError(t, err)
+	require.NotNil(t, got.ClientUserID)
+	assert.Equal(t, ana.ID, *got.ClientUserID, "client_user_id round-trips through the database")
+
+	n, err := m.CountByClientUser(ctx, ana.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	owned, err := m.ListByClientUser(ctx, ana.ID)
+	require.NoError(t, err)
+	require.Len(t, owned, 1)
+	assert.Equal(t, "it-owner", owned[0].Slug)
+
+	days := 45
+	saved, err := m.SetClientUserExpiry(ctx, ana.ID, false, &days, "root")
+	require.NoError(t, err)
+	assert.Equal(t, 45, *saved.MaxIdleDays)
+
+	// Upsert: setting it again replaces the row instead of erroring.
+	saved, err = m.SetClientUserExpiry(ctx, ana.ID, true, nil, "root")
+	require.NoError(t, err)
+	assert.True(t, saved.NeverExpires)
+	assert.Nil(t, saved.MaxIdleDays)
+
+	list, err := m.ListClientUsers(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "ana-it", list[0].Username)
+
+	require.NoError(t, m.MarkDeleted(ctx, row.ID, "", time.Now()))
+}
+
+func TestDatabaseConnectionsListsLiveSessions(t *testing.T) {
+	ctx := context.Background()
+	c := NewCluster(pool)
+	pass := provisionClient(t, "pdb_it_live")
+
+	none, err := c.DatabaseConnections(ctx, "pdb_it_live")
+	require.NoError(t, err)
+	assert.Empty(t, none)
+
+	conn, err := connectAs(ctx, "pdb_it_live", pass, "pdb_it_live")
+	require.NoError(t, err)
+	defer conn.Close(ctx)
+
+	idle, err := c.DatabaseConnections(ctx, "pdb_it_live")
+	require.NoError(t, err)
+	require.Len(t, idle, 1)
+	assert.Equal(t, "pdb_it_live", idle[0].User)
+	assert.Equal(t, "idle", idle[0].State)
+	assert.Empty(t, idle[0].Query, "the statement text is hidden while idle")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = conn.Exec(ctx, "SELECT pg_sleep(2)")
+	}()
+	require.Eventually(t, func() bool {
+		list, err := c.DatabaseConnections(ctx, "pdb_it_live")
+		return err == nil && len(list) == 1 && list[0].State == "active" && strings.Contains(list[0].Query, "pg_sleep")
+	}, 5*time.Second, 100*time.Millisecond, "a running statement is visible")
+	<-done
+}
+
+func TestSharedTemplatesAreSeededAndPersist(t *testing.T) {
+	ctx := context.Background()
+	meta := NewMetadata(pool)
+
+	all, err := meta.ListTemplates(ctx)
+	require.NoError(t, err)
+	shared := 0
+	for _, tpl := range all {
+		if tpl.Shared {
+			shared++
+		}
+	}
+	assert.GreaterOrEqual(t, shared, 5, "migration 006 ships sample templates for users")
+
+	saved, err := meta.SaveTemplate(ctx, model.Template{Name: "it-privada", SQL: "SELECT 1", Shared: false})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = meta.DeleteTemplate(context.Background(), saved.ID) })
+	assert.False(t, saved.Shared)
+	saved.Shared = true
+	updated, err := meta.SaveTemplate(ctx, saved)
+	require.NoError(t, err)
+	assert.True(t, updated.Shared)
+}
+
+func TestClientIdentityColumns(t *testing.T) {
+	ctx := context.Background()
+	m := NewMetadata(pool)
+
+	ana, err := m.CreateClientUser(ctx, model.NewClientUser{
+		Username: "ana@it.test", Email: "Ana@It.test", FullName: "Ana López", PasswordHash: "hash", EmailUseAccepted: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.DeleteClientUser(context.Background(), ana.ID) })
+	assert.True(t, ana.HasPassword)
+	assert.False(t, ana.GoogleLinked)
+	assert.Nil(t, ana.EmailVerifiedAt)
+
+	byEmail, err := m.GetClientUserByEmail(ctx, "ANA@it.TEST")
+	require.NoError(t, err)
+	assert.Equal(t, ana.ID, byEmail.ID, "email lookups ignore case")
+
+	_, err = m.CreateClientUser(ctx, model.NewClientUser{Username: "otra", Email: "ANA@IT.TEST", PasswordHash: "h"})
+	assert.ErrorIs(t, err, model.ErrConflict, "one account per email, whatever the case")
+
+	linked, err := m.LinkClientGoogle(ctx, ana.ID, "sub-it-1", true)
+	require.NoError(t, err)
+	assert.True(t, linked.GoogleLinked)
+	assert.True(t, linked.HasPassword, "linking never removes a password")
+	assert.NotNil(t, linked.EmailVerifiedAt)
+	assert.Equal(t, "Ana López", linked.FullName, "a name the user typed is kept")
+
+	bySub, err := m.GetClientUserByGoogleSub(ctx, "sub-it-1")
+	require.NoError(t, err)
+	assert.Equal(t, ana.ID, bySub.ID)
+
+	_, err = m.CreateClientUser(ctx, model.NewClientUser{Username: "dup-google@it.test", Email: "dup-google@it.test", GoogleSub: "sub-it-1"})
+	assert.ErrorIs(t, err, model.ErrConflict, "a Google account links to one user only")
+
+	onlyGoogle, err := m.CreateClientUser(ctx, model.NewClientUser{
+		Username: "g@it.test", Email: "g@it.test", FullName: "G", GoogleSub: "sub-it-2", EmailVerified: true,
+	})
+	require.NoError(t, err, "an account may have no password at all")
+	t.Cleanup(func() { _ = m.DeleteClientUser(context.Background(), onlyGoogle.ID) })
+	assert.False(t, onlyGoogle.HasPassword)
+	assert.True(t, onlyGoogle.GoogleLinked)
+	assert.NotNil(t, onlyGoogle.EmailVerifiedAt)
+
+	_, err = m.GetClientUserByEmail(ctx, "nobody@it.test")
+	assert.ErrorIs(t, err, model.ErrNotFound)
+}
+
+func TestClientUsernameAndLinkColumns(t *testing.T) {
+	ctx := context.Background()
+	m := NewMetadata(pool)
+	g, err := m.CreateClientUser(ctx, model.NewClientUser{
+		Username: "gnew@it.test", Email: "gnew@it.test", FullName: "G Nueva", GoogleSub: "sub-it-new",
+		EmailVerified: true, NeedsUsername: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.DeleteClientUser(context.Background(), g.ID) })
+	assert.True(t, g.NeedsUsername)
+
+	chosen, err := m.SetClientUsername(ctx, g.ID, "g.nueva")
+	require.NoError(t, err)
+	assert.Equal(t, "g.nueva", chosen.Username)
+	assert.False(t, chosen.NeedsUsername)
+	assert.Equal(t, "gnew@it.test", chosen.Email, "the email stays")
+
+	other, err := m.CreateClientUser(ctx, model.NewClientUser{Username: "o@it.test", Email: "o@it.test", PasswordHash: "h"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.DeleteClientUser(context.Background(), other.ID) })
+	_, err = m.SetClientUsername(ctx, other.ID, "g.nueva")
+	assert.ErrorIs(t, err, model.ErrConflict, "usernames are unique")
+
+	named, err := m.SetClientFullName(ctx, other.ID, "Otra Persona")
+	require.NoError(t, err)
+	assert.Equal(t, "Otra Persona", named.FullName)
+
+	// Linking from the account: the email is verified only when Google vouched for it.
+	same, err := m.LinkClientGoogle(ctx, other.ID, "sub-it-other", true)
+	require.NoError(t, err)
+	assert.True(t, same.GoogleLinked)
+	assert.True(t, same.HasPassword, "linking keeps the password")
+	assert.NotNil(t, same.EmailVerifiedAt)
+
+	third, err := m.CreateClientUser(ctx, model.NewClientUser{Username: "t@it.test", Email: "t@it.test", PasswordHash: "h"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.DeleteClientUser(context.Background(), third.ID) })
+	diff, err := m.LinkClientGoogle(ctx, third.ID, "sub-it-third", false)
+	require.NoError(t, err)
+	assert.Nil(t, diff.EmailVerifiedAt, "a different Google address does not verify this one")
 }

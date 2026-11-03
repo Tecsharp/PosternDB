@@ -47,7 +47,7 @@ export function SettingsPage({ settings, session }: PageProps) {
           <Panel title="Notificaciones">
             <div className="space-y-3 px-5 py-4">
               {channels.length > 0 ? (
-                <p className="text-[13px]">
+                <p className="text-[0.95rem]">
                   Canales activos: {channels.map((c) => <Tag key={c} tone="accent">{c === 'webhook' ? 'Webhook' : 'Email'}</Tag>)}
                 </p>
               ) : (
@@ -68,7 +68,7 @@ export function SettingsPage({ settings, session }: PageProps) {
                   >
                     {test.busy ? 'Enviando…' : 'Enviar prueba'}
                   </Button>
-                  <p role="status" className="text-[12.5px] text-accent-text">
+                  <p role="status" className="text-[0.9rem] text-accent-text">
                     {sent ? 'Prueba enviada. Revisa el canal.' : ''}
                   </p>
                   {test.error && <ErrorNote message={test.error} />}
@@ -78,9 +78,9 @@ export function SettingsPage({ settings, session }: PageProps) {
           </Panel>
 
           <Panel title="Migrar de dominio">
-            <div className="space-y-2 px-5 py-4 text-[13px] text-ink-2">
+            <div className="space-y-2 px-5 py-4 text-[0.95rem] text-ink-2">
               <p>Para pasar de un dominio compartido a uno propio, cambia BASE_DOMAIN, CLIENT_HOST_PREFIX y PANEL_HOSTNAME en .env, ejecuta setup y luego:</p>
-              <pre className="overflow-x-auto rounded-[8px] bg-bg px-3 py-2 font-mono text-[12px] text-ink">docker compose run --rm app migrate-hostnames --dry-run</pre>
+              <pre className="overflow-x-auto rounded-[8px] bg-bg px-3 py-2 font-mono text-[0.85rem] text-ink">docker compose run --rm app migrate-hostnames --dry-run</pre>
             </div>
           </Panel>
         </div>

@@ -220,6 +220,28 @@ func (c *Cluster) DatabaseStats(ctx context.Context, database string) (model.Dat
 	return s, translate(err)
 }
 
+// DatabaseConnections lists the client sessions open on database right now.
+// Internal sessions (the panel's own inspector and console) are hidden, and
+// the statement text is only returned while something is actually running.
+func (c *Cluster) DatabaseConnections(ctx context.Context, database string) ([]model.Connection, error) {
+	rows, err := c.pool.Query(ctx, `
+		SELECT pid, COALESCE(usename, ''), COALESCE(application_name, ''), COALESCE(state, ''),
+		       backend_start, state_change,
+		       CASE WHEN state IN ('active', 'idle in transaction') THEN left(COALESCE(query, ''), $4) ELSE '' END
+		FROM pg_stat_activity
+		WHERE datname = $1 AND backend_type = 'client backend'
+		  AND application_name NOT IN ($2, $3) AND pid <> pg_backend_pid()
+		ORDER BY backend_start`, database, config.AppNameInspector, config.AppNameConsole, config.MaxConnectionQueryChars)
+	if err != nil {
+		return nil, translate(err)
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.Connection, error) {
+		var c model.Connection
+		err := r.Scan(&c.PID, &c.User, &c.Application, &c.State, &c.ConnectedAt, &c.StateSince, &c.Query)
+		return c, err
+	})
+}
+
 // ident quotes an identifier. Names are already whitelisted by the naming
 // package; quoting is defence in depth.
 func ident(name string) string {

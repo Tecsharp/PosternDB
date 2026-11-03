@@ -33,17 +33,17 @@ const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeType>) {
   const { table, selected, fkColumns } = data
   return (
     <div
-      className={`overflow-hidden rounded-[8px] bg-surface-2 text-[12px] shadow-[0_6px_18px_-8px_rgb(0_0_0/0.55)] ${
+      className={`overflow-hidden rounded-[8px] bg-surface-2 text-[0.85rem] shadow-[0_6px_18px_-8px_rgb(0_0_0/0.55)] ${
         selected ? 'ring-2 ring-accent' : ''
       }`}
       style={{ width: NODE_WIDTH }}
     >
       <div className="flex h-11 items-center justify-between gap-2 bg-surface-3 px-3">
-        <span className="truncate font-mono text-[12.5px] font-semibold">
+        <span className="truncate font-mono text-[0.9rem] font-semibold">
           {table.schema !== 'public' && <span className="text-ink-3">{table.schema}.</span>}
           {table.name}
         </span>
-        <span className="shrink-0 font-mono text-[11px] text-ink-2 tabular-nums">
+        <span className="shrink-0 font-mono text-[0.78rem] text-ink-2 tabular-nums">
           {table.kind === 'table' ? `${formatNumber(table.rows)} filas` : table.kind === 'view' ? 'vista' : 'vista mat.'}
         </span>
       </div>
@@ -54,10 +54,10 @@ const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeType>) {
                 column on its left edge and enter the parent's key on its right. */}
             <Handle type="source" position={Position.Left} id={`out-${c.name}`} className="!size-1.5 !border-0 !bg-transparent" />
             <span className="w-3.5 shrink-0 text-accent-text">
-              {c.primaryKey ? <KeyMinimalisticIcon size={13} aria-label="clave primaria" /> : fkColumns.has(c.name) ? <LinkMinimalistic2Icon size={13} className="text-ink-2" aria-label="clave foránea" /> : null}
+              {c.primaryKey ? <KeyMinimalisticIcon size={15} aria-label="clave primaria" /> : fkColumns.has(c.name) ? <LinkMinimalistic2Icon size={15} className="text-ink-2" aria-label="clave foránea" /> : null}
             </span>
             <span className={`truncate font-mono ${c.primaryKey ? 'font-semibold' : ''}`}>{c.name}</span>
-            <span className="ml-auto truncate pl-2 font-mono text-[11px] text-ink-3">
+            <span className="ml-auto truncate pl-2 font-mono text-[0.78rem] text-ink-3">
               {c.type}
               {!c.nullable && !c.primaryKey ? ' *' : ''}
             </span>

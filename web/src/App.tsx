@@ -1,20 +1,34 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api, type Session, type Settings } from './api'
-import { Shell } from './components/Shell'
-import { Button, ErrorNote, Loading, Sheet, SheetFooter, SheetHeader, useAction } from './components/ui'
+import { ChangePasswordSheet } from './components/ChangePasswordSheet'
+import { SessionContext } from './components/SessionContext'
+import { clientGroups, Shell } from './components/Shell'
+import { Loading } from './components/ui'
 import { Activity } from './pages/Activity'
 import { Admins } from './pages/Admins'
 import { Backups } from './pages/Backups'
+import { Clients } from './pages/Clients'
+import { Expiry } from './pages/Expiry'
 import { DatabaseDetail } from './pages/db/DatabaseDetail'
 import { Databases } from './pages/Databases'
+import { Help } from './pages/Help'
 import { Login } from './pages/Login'
+import { MyActivity } from './pages/me/MyActivity'
+import { MyBackups } from './pages/me/MyBackups'
+import { MyDatabaseDetail } from './pages/me/MyDatabaseDetail'
+import { MyDatabases } from './pages/me/MyDatabases'
+import { MySecurity } from './pages/me/MySecurity'
+import { MySettings } from './pages/me/MySettings'
+import { UsernameSheet } from './pages/me/UsernameSheet'
 import { SettingsPage } from './pages/SettingsPage'
 import { Templates } from './pages/Templates'
-import { useRoute } from './router'
+import { href, navigate, useRoute } from './router'
 
 export default function App() {
+  const route = useRoute()
   const [session, setSession] = useState<Session | null | undefined>(undefined)
   const loggedOut = useCallback(() => setSession(null), [])
+  const refresh = useCallback(async () => setSession(await api.session()), [])
 
   useEffect(() => {
     api
@@ -23,9 +37,45 @@ export default function App() {
       .catch(() => setSession(null))
   }, [])
 
+  // The tunnel tutorial is public: it opens in a new tab, signed in or not.
+  if (route.page === 'help') return <Help />
   if (session === undefined) return <Loading label="Cargando…" />
   if (session === null) return <Login onLoggedIn={setSession} />
+  if (session.role === 'client') {
+    return (
+      <SessionContext.Provider value={{ session, refresh }}>
+        <ClientWorkspace session={session} onLoggedOut={loggedOut} />
+      </SessionContext.Provider>
+    )
+  }
   return <Workspace session={session} onLoggedOut={loggedOut} />
+}
+
+const clientPages = ['my-database', 'my-backups', 'my-activity', 'my-security', 'my-settings']
+
+/**
+ * The reduced "panel de usuario": only their own databases, backups, activity
+ * and account — never the SQL console and never another user's data.
+ */
+function ClientWorkspace({ session, onLoggedOut }: { session: Session; onLoggedOut: () => void }) {
+  const route = useRoute()
+
+  async function logout() {
+    await api.logout().catch(() => undefined)
+    onLoggedOut()
+  }
+
+  return (
+    <Shell route={route} session={session} groups={clientGroups} onLogout={logout} onChangePassword={() => navigate(href({ page: 'my-security' }))}>
+      {route.page === 'my-database' && <MyDatabaseDetail key={route.slug} slug={route.slug} tab={route.tab} />}
+      {route.page === 'my-backups' && <MyBackups />}
+      {route.page === 'my-activity' && <MyActivity />}
+      {route.page === 'my-security' && <MySecurity />}
+      {route.page === 'my-settings' && <MySettings />}
+      {!clientPages.includes(route.page) && <MyDatabases />}
+      <UsernameSheet open={session.needsUsername === true} />
+    </Shell>
+  )
 }
 
 export interface PageProps {
@@ -58,63 +108,10 @@ function Workspace({ session, onLoggedOut }: { session: Session; onLoggedOut: ()
       {route.page === 'templates' && <Templates {...props} />}
       {route.page === 'activity' && <Activity />}
       {route.page === 'admins' && <Admins {...props} />}
+      {route.page === 'clients' && <Clients {...props} />}
+      {route.page === 'expiry' && <Expiry {...props} />}
       {route.page === 'settings' && <SettingsPage {...props} />}
-      <ChangePasswordSheet open={changingPassword} onClose={() => setChangingPassword(false)} />
+      <ChangePasswordSheet open={changingPassword} onClose={() => setChangingPassword(false)} changePassword={api.changePassword} />
     </Shell>
-  )
-}
-
-function ChangePasswordSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [current, setCurrent] = useState('')
-  const [next, setNext] = useState('')
-  const [done, setDone] = useState(false)
-  const { busy, error, run } = useAction()
-
-  function close() {
-    setCurrent('')
-    setNext('')
-    setDone(false)
-    onClose()
-  }
-
-  async function submit(e: FormEvent) {
-    e.preventDefault()
-    const ok = await run(() => api.changePassword(current, next).then(() => true))
-    if (ok) setDone(true)
-  }
-
-  return (
-    <Sheet open={open} onClose={close} labelledBy="pw-title">
-      <form onSubmit={submit}>
-        <SheetHeader id="pw-title" title="Cambiar mi contraseña" subtitle="Mínimo 12 caracteres." />
-        <div className="space-y-4 px-6 py-5">
-          {done ? (
-            <p role="status" className="text-[13px] text-accent-text">
-              Contraseña actualizada.
-            </p>
-          ) : (
-            <>
-              <label className="block">
-                <span className="label">Contraseña actual</span>
-                <input className="field" type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
-              </label>
-              <label className="block">
-                <span className="label">Contraseña nueva</span>
-                <input className="field" type="password" autoComplete="new-password" minLength={12} required value={next} onChange={(e) => setNext(e.target.value)} />
-              </label>
-              {error && <ErrorNote message={error} />}
-            </>
-          )}
-        </div>
-        <SheetFooter>
-          <Button onClick={close}>{done ? 'Cerrar' : 'Cancelar'}</Button>
-          {!done && (
-            <Button type="submit" variant="primary" disabled={busy}>
-              {busy ? 'Guardando…' : 'Cambiar contraseña'}
-            </Button>
-          )}
-        </SheetFooter>
-      </form>
-    </Sheet>
   )
 }

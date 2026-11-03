@@ -2,57 +2,84 @@
 @import "@xyflow/react/dist/style.css";
 
 /*
- * PosternDB — macOS-native feel in PachisLab's military green.
+ * PosternDB — tipografia del sistema (SF Pro) y superficies planas.
  * Flat surfaces separated by tone (no outlines), SF Pro / SF Mono,
  * inset grouped lists like System Settings. Text pairs meet WCAG AA.
  */
+/* Colores calmados: grafito neutro y un acento salvia apagado. El boton
+ * principal es neutro (tinta sobre fondo), el verde solo marca estados. */
 :root {
-  color-scheme: dark;
-  --bg: #0c0f0d;
-  --sidebar: #121613;
-  --surface: #171c18;
-  --surface-2: #1e241f;
-  --surface-3: #283029;
-  --hairline: rgb(255 255 255 / 0.07);
-  --ink: #e9ebe8;
-  --ink-2: #a0a89f;
-  --ink-3: #828b83;
-  --accent: #0bbc2e;
-  --accent-text: #45d965;
-  --accent-ink: #04150a;
-  --accent-soft: rgb(11 188 46 / 0.16);
-  --ring: #45d965;
-  --warn: #e7a816;
-  --idle: #8e978f;
-  --danger: #ff6b61;
-  --danger-ink: #2a0705;
-  --danger-soft: rgb(255 107 97 / 0.12);
-  --sheet-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.09), 0 28px 70px -12px rgb(0 0 0 / 0.75);
+  color-scheme: light;
+  --bg: #f6f6f7;
+  --sidebar: #eeeef0;
+  --surface: #ffffff;
+  --surface-2: #f1f1f3;
+  --surface-3: #e5e5e9;
+  --hairline: rgb(15 15 22 / 0.09);
+  --ink: #17181c;
+  --ink-2: #51545d;
+  --ink-3: #63666f;
+  --accent: #3f7d5e;
+  --accent-text: #2d6a4d;
+  --accent-ink: #ffffff;
+  --accent-soft: rgb(63 125 94 / 0.12);
+  --ring: #3f7d5e;
+  --warn: #8a5a00;
+  --idle: #5f636b;
+  --danger: #b42318;
+  --danger-ink: #ffffff;
+  --danger-soft: rgb(180 35 24 / 0.08);
+  --sheet-shadow: 0 0 0 0.5px rgb(15 15 22 / 0.12), 0 28px 70px -14px rgb(15 15 22 / 0.3);
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #f4f5f3;
-    --sidebar: #e9ebe7;
-    --surface: #ffffff;
-    --surface-2: #eef0ec;
-    --surface-3: #e1e5df;
-    --hairline: rgb(14 19 16 / 0.09);
-    --ink: #111512;
-    --ink-2: #4b554e;
-    --ink-3: #5f6a62;
-    --accent: #0bbc2e;
-    --accent-text: #08782a;
-    --accent-ink: #04150a;
-    --accent-soft: rgb(11 188 46 / 0.14);
-    --ring: #08782a;
-    --warn: #8a5a00;
-    --idle: #5d665f;
-    --danger: #b42318;
-    --danger-ink: #ffffff;
-    --danger-soft: rgb(180 35 24 / 0.08);
-    --sheet-shadow: 0 0 0 0.5px rgb(14 19 16 / 0.12), 0 28px 70px -14px rgb(14 19 16 / 0.35);
+/* Claro por defecto; oscuro si se elige, o el del sistema con "Sistema". */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f1013;
+  --sidebar: #141519;
+  --surface: #1a1b20;
+  --surface-2: #212228;
+  --surface-3: #2b2c33;
+  --hairline: rgb(255 255 255 / 0.08);
+  --ink: #ececf0;
+  --ink-2: #a3a5ae;
+  --ink-3: #8b8d97;
+  --accent: #6fae92;
+  --accent-text: #86c2a6;
+  --accent-ink: #0d1712;
+  --accent-soft: rgb(111 174 146 / 0.16);
+  --ring: #86c2a6;
+  --warn: #e0a93a;
+  --idle: #90939c;
+  --danger: #ff7a70;
+  --danger-ink: #2a0705;
+  --danger-soft: rgb(255 122 112 / 0.13);
+  --sheet-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.09), 0 28px 70px -12px rgb(0 0 0 / 0.7);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] {
+    color-scheme: dark;
+    --bg: #0f1013;
+    --sidebar: #141519;
+    --surface: #1a1b20;
+    --surface-2: #212228;
+    --surface-3: #2b2c33;
+    --hairline: rgb(255 255 255 / 0.08);
+    --ink: #ececf0;
+    --ink-2: #a3a5ae;
+    --ink-3: #8b8d97;
+    --accent: #6fae92;
+    --accent-text: #86c2a6;
+    --accent-ink: #0d1712;
+    --accent-soft: rgb(111 174 146 / 0.16);
+    --ring: #86c2a6;
+    --warn: #e0a93a;
+    --idle: #90939c;
+    --danger: #ff7a70;
+    --danger-ink: #2a0705;
+    --danger-soft: rgb(255 122 112 / 0.13);
+    --sheet-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.09), 0 28px 70px -12px rgb(0 0 0 / 0.7);
   }
 }
 
@@ -83,8 +110,8 @@
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
-    font-size: 13px;
-    letter-spacing: -0.003em;
+    font-size: 106.25%; /* 17 px, igual que Nora: todo lo que esta en rem sube con esto */
+    letter-spacing: -0.005em;
   }
   body {
     @apply bg-bg text-ink font-sans;
@@ -103,14 +130,14 @@
 @layer components {
   /* Inset grouped container (System Settings): fill only, no outline. */
   .group-box {
-    @apply overflow-hidden rounded-[10px] bg-surface;
+    @apply overflow-hidden rounded-[14px] bg-surface;
   }
   /* Rows inside a group: hairline separators inset from the left edge. */
   .group-rows > * + * {
     box-shadow: inset 16px 0 0 var(--surface), inset 0 1px 0 var(--hairline);
   }
   .field {
-    @apply h-[30px] w-full rounded-[6px] bg-surface-2 px-2.5 text-[13px] text-ink placeholder:text-ink-3 outline-none;
+    @apply h-10 w-full rounded-[10px] bg-surface-2 px-3.5 text-[1.05rem] text-ink placeholder:text-ink-3 outline-none;
   }
   textarea.field {
     @apply h-auto py-2 leading-relaxed;
@@ -123,10 +150,10 @@
     box-shadow: inset 0 0 0 1px var(--danger);
   }
   .label {
-    @apply mb-1 block text-[12px] font-medium text-ink-2;
+    @apply mb-1 block text-[0.85rem] font-medium text-ink-2;
   }
   .section-title {
-    @apply px-1 pb-1.5 text-[12px] font-semibold text-ink-2;
+    @apply px-1 pb-1.5 text-[0.85rem] font-semibold text-ink-2;
   }
 }
 
@@ -134,17 +161,17 @@
 dialog.sheet {
   margin: 64px auto auto;
   width: 100%;
-  max-width: min(520px, calc(100vw - 32px));
+  max-width: min(560px, calc(100vw - 32px));
   max-height: calc(100dvh - 88px);
   border: none;
   padding: 0;
   color: inherit;
   background: var(--surface);
-  border-radius: 12px;
+  border-radius: 16px;
   box-shadow: var(--sheet-shadow);
 }
 dialog.sheet.sheet-wide {
-  max-width: min(700px, calc(100vw - 32px));
+  max-width: min(760px, calc(100vw - 32px));
 }
 dialog.sheet[open] {
   animation: sheet-in 180ms cubic-bezier(0.2, 0.9, 0.3, 1);

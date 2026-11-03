@@ -26,6 +26,12 @@ type Metadata interface {
 	MarkDeleted(ctx context.Context, id int64, archivedAs string, at time.Time) error
 	UpdateHostname(ctx context.Context, id int64, hostname string) error
 	SetExpiry(ctx context.Context, id int64, never bool, maxIdleDays *int, graceUntil *time.Time) error
+	GetPlatformSettings(ctx context.Context) (model.PlatformSettings, error)
+	SetPlatformSettings(ctx context.Context, days, warnDays *int, actor string) (model.PlatformSettings, error)
+	ListClientUsers(ctx context.Context) ([]model.ClientUser, error)
+	SetClientUserExpiry(ctx context.Context, id int64, never bool, maxIdleDays *int, actor string) (model.ClientUser, error)
+	ListByClientUser(ctx context.Context, clientUserID int64) ([]model.ClientDatabase, error)
+	CountByClientUser(ctx context.Context, clientUserID int64) (int, error)
 	RecordAudit(ctx context.Context, e model.AuditEntry) error
 
 	ListUsers(ctx context.Context, databaseID int64) ([]model.DatabaseUser, error)
@@ -55,6 +61,7 @@ type Cluster interface {
 	SetPassword(ctx context.Context, role, scramVerifier string) error
 	CreateUserRole(ctx context.Context, role, database, scramVerifier string) error
 	DatabaseStats(ctx context.Context, database string) (model.DatabaseStats, error)
+	DatabaseConnections(ctx context.Context, database string) ([]model.Connection, error)
 }
 
 // Inspector reads and modifies the inside of client databases.
@@ -66,6 +73,10 @@ type Inspector interface {
 	CountRows(ctx context.Context, database, owner, schema, table string) (int64, error)
 	ApplySQL(ctx context.Context, database, owner, sql string) error
 	GrantUser(ctx context.Context, database, owner, user, access string) error
+	Browse(ctx context.Context, database, owner, schema, table string, page, size int, sortColumn string, desc bool) (model.TableData, error)
+	InsertRow(ctx context.Context, database, owner, schema, table string, values model.RowValues) error
+	UpdateRow(ctx context.Context, database, owner, schema, table string, key, values model.RowValues) error
+	DeleteRow(ctx context.Context, database, owner, schema, table string, key model.RowValues) error
 	DropUserObjects(ctx context.Context, database, owner, user string) error
 }
 
@@ -129,12 +140,133 @@ type DatabaseView struct {
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
-func (s *Service) view(db model.ClientDatabase) DatabaseView {
-	v := DatabaseView{ClientDatabase: db, Status: s.opts.Policy.Status(db, s.opts.Now())}
-	if at, ok := s.opts.Policy.ExpiresAt(db); ok {
+func (s *Service) view(db model.ClientDatabase, policy expiry.Policy, overrides map[int64]model.ClientUser) DatabaseView {
+	resolved := expiry.ApplyClientOverride(db, overrides)
+	v := DatabaseView{ClientDatabase: db, Status: policy.Status(resolved, s.opts.Now())}
+	if at, ok := policy.ExpiresAt(resolved); ok {
 		v.ExpiresAt = &at
 	}
 	return v
+}
+
+// EffectivePolicy merges the .env defaults with the owner's runtime
+// override. A read error falls back to the .env defaults rather than
+// failing every request that lists or checks a database.
+func (s *Service) EffectivePolicy(ctx context.Context) expiry.Policy {
+	override, err := s.meta.GetPlatformSettings(ctx)
+	if err != nil {
+		s.opts.Logger.Error("read platform settings", "error", err)
+		return s.opts.Policy
+	}
+	return s.opts.Policy.WithOverride(override)
+}
+
+// clientOverrides fetches every client's exception once, keyed by id, for
+// List/Get and the auditor to apply without a query per database. A read
+// error yields an empty map (every database then falls back to its own
+// setting or the global policy) rather than failing the whole request.
+func (s *Service) clientOverrides(ctx context.Context) map[int64]model.ClientUser {
+	list, err := s.meta.ListClientUsers(ctx)
+	if err != nil {
+		s.opts.Logger.Error("read client users", "error", err)
+		return nil
+	}
+	out := make(map[int64]model.ClientUser, len(list))
+	for _, u := range list {
+		out[u.ID] = u
+	}
+	return out
+}
+
+// ClientOverrides implements auditor.Lifecycle: every client's exception,
+// keyed by client_users.id.
+func (s *Service) ClientOverrides(ctx context.Context) map[int64]model.ClientUser {
+	return s.clientOverrides(ctx)
+}
+
+// ListClients returns every registered client with how many databases they
+// own, for the owner-only Usuarios page.
+func (s *Service) ListClients(ctx context.Context) ([]model.ClientUser, error) {
+	users, err := s.meta.ListClientUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range users {
+		n, err := s.meta.CountByClientUser(ctx, users[i].ID)
+		if err == nil {
+			users[i].DatabaseCount = n
+		}
+	}
+	return users, nil
+}
+
+// SetClientExpiry creates, replaces or clears (never=false, maxIdleDays=nil)
+// a client's exception, applied to every database they own that has no
+// exception of its own.
+func (s *Service) SetClientExpiry(ctx context.Context, id int64, never bool, maxIdleDays *int, actor string) (model.ClientUser, error) {
+	if maxIdleDays != nil && (*maxIdleDays < 1 || *maxIdleDays > maxExtendDays) {
+		return model.ClientUser{}, invalid("los días deben estar entre 1 y %d", maxExtendDays)
+	}
+	saved, err := s.meta.SetClientUserExpiry(ctx, id, never, maxIdleDays, actor)
+	if err != nil {
+		return saved, err
+	}
+	s.recordAudit(ctx, actor, config.ActionClientExpiryChanged, saved.Username, map[string]any{"neverExpires": never, "maxIdleDays": maxIdleDays})
+	return saved, nil
+}
+
+// ClientDatabases returns the non-deleted databases owned by one client,
+// for the reduced "panel de usuario".
+func (s *Service) ClientDatabases(ctx context.Context, clientUserID int64) ([]DatabaseView, error) {
+	dbs, err := s.meta.ListByClientUser(ctx, clientUserID)
+	if err != nil {
+		return nil, err
+	}
+	policy := s.EffectivePolicy(ctx)
+	overrides := s.clientOverrides(ctx)
+	views := make([]DatabaseView, 0, len(dbs))
+	for _, db := range dbs {
+		views = append(views, s.view(db, policy, overrides))
+	}
+	return views, nil
+}
+
+// CountByClient reports how many non-deleted databases a client owns, for
+// MAX_DATABASES_PER_CLIENT enforcement at creation time.
+func (s *Service) CountByClient(ctx context.Context, clientUserID int64) (int, error) {
+	return s.meta.CountByClientUser(ctx, clientUserID)
+}
+
+// GlobalSettings returns the raw owner-set override (nil fields mean
+// "using the .env default"), for the Ajustes -> Expiración panel.
+func (s *Service) GlobalSettings(ctx context.Context) (model.PlatformSettings, error) {
+	return s.meta.GetPlatformSettings(ctx)
+}
+
+// SetGlobalSettings stores the owner's override. A nil argument resets that
+// field back to the .env default.
+func (s *Service) SetGlobalSettings(ctx context.Context, days, warnDays *int, actor string) (model.PlatformSettings, error) {
+	for _, v := range []*int{days, warnDays} {
+		if v != nil && (*v < 1 || *v > maxExtendDays) {
+			return model.PlatformSettings{}, invalid("los días deben estar entre 1 y %d", maxExtendDays)
+		}
+	}
+	effectiveDays, effectiveWarn := s.opts.Policy.MaxIdle, s.opts.Policy.WarnBefore
+	if days != nil {
+		effectiveDays = time.Duration(*days) * 24 * time.Hour
+	}
+	if warnDays != nil {
+		effectiveWarn = time.Duration(*warnDays) * 24 * time.Hour
+	}
+	if effectiveWarn >= effectiveDays {
+		return model.PlatformSettings{}, invalid("los días de aviso deben ser menos que los días para expirar")
+	}
+	saved, err := s.meta.SetPlatformSettings(ctx, days, warnDays, actor)
+	if err != nil {
+		return saved, err
+	}
+	s.recordAudit(ctx, actor, config.ActionGlobalExpiryChanged, "", map[string]any{"expirationDays": days, "expiringSoonDays": warnDays})
+	return saved, nil
 }
 
 // List returns every non-deleted database with its current status.
@@ -143,9 +275,11 @@ func (s *Service) List(ctx context.Context) ([]DatabaseView, error) {
 	if err != nil {
 		return nil, err
 	}
+	policy := s.EffectivePolicy(ctx)
+	overrides := s.clientOverrides(ctx)
 	views := make([]DatabaseView, 0, len(dbs))
 	for _, db := range dbs {
-		views = append(views, s.view(db))
+		views = append(views, s.view(db, policy, overrides))
 	}
 	return views, nil
 }
@@ -156,7 +290,7 @@ func (s *Service) Get(ctx context.Context, slug string) (DatabaseView, error) {
 	if err != nil {
 		return DatabaseView{}, err
 	}
-	return s.view(db), nil
+	return s.view(db, s.EffectivePolicy(ctx), s.clientOverrides(ctx)), nil
 }
 
 // lookup validates the slug before touching the store.

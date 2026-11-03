@@ -20,6 +20,7 @@ import (
 
 	"github.com/tecsharp/posterndb/internal/admins"
 	"github.com/tecsharp/posterndb/internal/auth"
+	"github.com/tecsharp/posterndb/internal/clients"
 	"github.com/tecsharp/posterndb/internal/config"
 	"github.com/tecsharp/posterndb/internal/expiry"
 	"github.com/tecsharp/posterndb/internal/model"
@@ -52,6 +53,18 @@ type env struct {
 
 func newEnv(t *testing.T, health error) env {
 	t.Helper()
+	return newEnvWith(t, health, nil)
+}
+
+func newEnvWith(t *testing.T, health error, google GoogleAuth) env {
+	t.Helper()
+	return newEnvFull(t, health, google, config.AuthModeBoth)
+}
+
+// newEnvFull also picks AUTH_MODE: in google mode registered users have no
+// password login at all.
+func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string) env {
+	t.Helper()
 	e := env{
 		meta:     testsupport.NewFakeMetadata(),
 		cluster:  testsupport.NewFakeCluster(),
@@ -64,7 +77,9 @@ func newEnv(t *testing.T, health error) env {
 	e.meta.Admins[operator] = &model.Admin{Username: operator, Role: config.RoleAdmin}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	adminSvc := admins.New(e.meta, testsupport.FakeSecrets{}, adminUser)
-	e.auth = auth.New(adminUser, adminPass, strings.Repeat("k", 32), time.Hour, adminSvc)
+	clientSvc := clients.New(e.meta, testsupport.FakeSecrets{}, true)
+	e.auth = auth.New(adminUser, adminPass, strings.Repeat("k", 32), time.Hour, adminSvc, clientSvc)
+	e.auth.SetClientPasswordLogin(mode != config.AuthModeGoogle)
 	svc := provision.New(e.meta, e.cluster, e.cf, e.insp, testsupport.FakeSecrets{}, provision.Options{
 		Resolver:           naming.Resolver{BaseDomain: "pachislab.com", HostPrefix: "postern-", PanelHostname: "postern.pachislab.com"},
 		Policy:             expiry.Policy{MaxIdle: 30 * 24 * time.Hour, WarnBefore: 7 * 24 * time.Hour},
@@ -79,10 +94,12 @@ func newEnv(t *testing.T, health error) env {
 		Limiter:   auth.NewRateLimiter(config.LoginRatePerMinute, config.LoginRateBurst),
 		Databases: svc,
 		Admins:    adminSvc,
+		Clients:   clientSvc,
+		Google:    google,
 		Audit:     e.meta,
 		Health:    pinger{err: health},
 		Notifier:  e.notifier,
-		Settings:  Settings{BaseDomain: "pachislab.com", ExampleHostname: "postern-cliente1.pachislab.com", ExpirationDays: 30},
+		Settings:  Settings{BaseDomain: "pachislab.com", ExampleHostname: "postern-cliente1.pachislab.com", ExpirationDays: 30, AllowSelfRegister: true, MaxDatabasesPerClient: 3, AuthMode: mode},
 		Static: fstest.MapFS{
 			"index.html":        {Data: []byte("<html>panel</html>")},
 			"assets/app-abc.js": {Data: []byte("console.log(1)")},
@@ -113,7 +130,13 @@ func (e env) do(t *testing.T, method, path string, o req) *httptest.ResponseReco
 		r.Header.Set(config.HeaderCFConnectIP, o.ip)
 	}
 	if o.as != "" {
-		token, _, err := e.auth.Issue(o.as)
+		subject := o.as
+		for _, u := range e.meta.ClientUsers {
+			if u.Username == o.as {
+				subject = auth.ClientIdentity(*u).Subject()
+			}
+		}
+		token, _, err := e.auth.Issue(subject)
 		require.NoError(t, err)
 		r.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})
 	}
@@ -282,6 +305,16 @@ func TestRoleMatrix(t *testing.T) {
 		{http.MethodPost, "/api/databases", `{"name":"other"}`, 403, 201},
 		{http.MethodGet, "/api/admins", "", 403, 403},
 		{http.MethodPost, "/api/admins", `{"username":"zed","role":"viewer"}`, 403, 403},
+		// Only the panel owner touches the inactivity policy, global or per-database.
+		{http.MethodPut, "/api/databases/acme/expiry", `{"neverExpires":true,"maxIdleDays":null}`, 403, 403},
+		{http.MethodPost, "/api/databases/acme/extend", `{"days":10}`, 403, 403},
+		{http.MethodGet, "/api/settings/expiry", "", 403, 403},
+		{http.MethodPut, "/api/settings/expiry", `{"expirationDays":45,"expiringSoonDays":10}`, 403, 403},
+		{http.MethodGet, "/api/clients", "", 403, 403},
+		{http.MethodPost, "/api/clients", `{"email":"ana@example.com","fullName":"Ana López"}`, 403, 403},
+		{http.MethodPost, "/api/clients/1/password", "", 403, 403},
+		{http.MethodPut, "/api/clients/1/expiry", `{"neverExpires":true}`, 403, 403},
+		{http.MethodDelete, "/api/clients/1", "", 403, 403},
 	}
 	for _, c := range cases {
 		assert.Equal(t, c.viewerCode, e.do(t, c.method, c.path, req{body: c.body, as: viewer}).Code, "viewer %s %s", c.method, c.path)
@@ -350,6 +383,88 @@ func TestPasswordExpiryAndStats(t *testing.T) {
 	assert.Equal(t, int64(5), st.TotalRows)
 	sc := decode[model.Schema](t, e.owner(t, http.MethodGet, "/api/databases/acme/schema", ""))
 	assert.Len(t, sc.Tables, 1)
+}
+
+func TestGlobalExpirySettings(t *testing.T) {
+	e := newEnv(t, nil)
+
+	// Still just the .env defaults until the owner overrides them.
+	before := decode[Settings](t, e.owner(t, http.MethodGet, "/api/settings", ""))
+	assert.Equal(t, 30, before.ExpirationDays)
+	raw := decode[model.PlatformSettings](t, e.owner(t, http.MethodGet, "/api/settings/expiry", ""))
+	assert.Nil(t, raw.ExpirationDays)
+
+	rec := e.owner(t, http.MethodPut, "/api/settings/expiry", `{"expirationDays":45,"expiringSoonDays":10}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	saved := decode[model.PlatformSettings](t, rec)
+	assert.Equal(t, 45, *saved.ExpirationDays)
+	assert.Equal(t, "admin", saved.UpdatedBy)
+
+	// Propagates to the plain /settings endpoint everyone reads.
+	after := decode[Settings](t, e.owner(t, http.MethodGet, "/api/settings", ""))
+	assert.Equal(t, 45, after.ExpirationDays)
+	assert.Equal(t, 10, after.ExpiringSoonDays)
+	assert.Equal(t, config.ActionGlobalExpiryChanged, e.meta.Audit[len(e.meta.Audit)-1].Action)
+
+	// Warn days must stay below the expiration days.
+	rec = e.owner(t, http.MethodPut, "/api/settings/expiry", `{"expirationDays":5,"expiringSoonDays":10}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	rec = e.owner(t, http.MethodPut, "/api/settings/expiry", `{"expirationDays":0,"expiringSoonDays":10}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	// Resetting a field back to the .env default with null.
+	rec = e.owner(t, http.MethodPut, "/api/settings/expiry", `{"expirationDays":null,"expiringSoonDays":10}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	reset := decode[model.PlatformSettings](t, rec)
+	assert.Nil(t, reset.ExpirationDays)
+	after = decode[Settings](t, e.owner(t, http.MethodGet, "/api/settings", ""))
+	assert.Equal(t, 30, after.ExpirationDays, "back to the .env default")
+
+	e.meta.FailList = true
+	fallback := decode[Settings](t, e.owner(t, http.MethodGet, "/api/settings", ""))
+	assert.Equal(t, 30, fallback.ExpirationDays, "a settings read failure falls back to the .env default")
+}
+
+func TestClientsEndpoints(t *testing.T) {
+	e := newEnv(t, nil)
+
+	empty := decode[struct{ Clients []model.ClientUser }](t, e.owner(t, http.MethodGet, "/api/clients", ""))
+	assert.Empty(t, empty.Clients)
+
+	rec := e.owner(t, http.MethodPost, "/api/clients", `{"email":"ana@example.com","fullName":"Ana López"}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	created := decode[struct {
+		Client   model.ClientUser `json:"client"`
+		Password string           `json:"password"`
+	}](t, rec)
+	require.NotEmpty(t, created.Password)
+	anaID := created.Client.ID
+
+	rec = e.owner(t, http.MethodPut, "/api/clients/"+itoa(anaID)+"/expiry", `{"neverExpires":true}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	saved := decode[model.ClientUser](t, rec)
+	assert.True(t, saved.NeverExpires)
+
+	list := decode[struct{ Clients []model.ClientUser }](t, e.owner(t, http.MethodGet, "/api/clients", ""))
+	require.Len(t, list.Clients, 1)
+	assert.Equal(t, "ana@example.com", list.Clients[0].Username)
+	assert.Equal(t, "Ana López", list.Clients[0].FullName)
+
+	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPost, "/api/clients", `{"email":"nope","fullName":"Ana López"}`).Code)
+	assert.Equal(t, http.StatusConflict, e.owner(t, http.MethodPost, "/api/clients", `{"email":"ANA@example.com","fullName":"Otra Ana"}`).Code)
+
+	rec = e.owner(t, http.MethodPost, "/api/clients/"+itoa(anaID)+"/password", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.NotEmpty(t, decode[map[string]string](t, rec)["password"])
+	assert.Equal(t, http.StatusNotFound, e.owner(t, http.MethodPost, "/api/clients/9999/password", "").Code)
+
+	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPut, "/api/clients/"+itoa(anaID)+"/expiry", `{"neverExpires":false,"maxIdleDays":0}`).Code)
+
+	assert.Equal(t, http.StatusNoContent, e.owner(t, http.MethodDelete, "/api/clients/"+itoa(anaID), "").Code)
+	assert.Equal(t, http.StatusNotFound, e.owner(t, http.MethodDelete, "/api/clients/"+itoa(anaID), "").Code)
+
+	e.meta.FailList = true
+	assert.Equal(t, http.StatusInternalServerError, e.owner(t, http.MethodGet, "/api/clients", "").Code)
 }
 
 func TestConsoleRowsAndCount(t *testing.T) {
@@ -502,4 +617,30 @@ func TestAuditAndFailures(t *testing.T) {
 	for _, p := range []string{"/api/databases", "/api/audit", "/api/backups", "/api/templates"} {
 		assert.Equal(t, http.StatusInternalServerError, e.owner(t, http.MethodGet, p, "").Code, p)
 	}
+}
+
+func TestDataEditorEndpoints(t *testing.T) {
+	e := newEnv(t, nil)
+	e.createDB(t, "acme")
+	e.insp.Data = model.TableData{Columns: []model.DataColumn{{Name: "id", PrimaryKey: true}}, Rows: [][]*string{{nil}}, Total: 1, Editable: true}
+	base := "/api/databases/acme/tables/public/orders/data"
+
+	d := decode[model.TableData](t, e.owner(t, http.MethodGet, base+"?page=2&sort=id&dir=desc", ""))
+	assert.Equal(t, int64(1), d.Total)
+	assert.Equal(t, "browse public.orders page=2 size=50 sort=id desc=true", e.insp.Queries[len(e.insp.Queries)-1])
+
+	assert.Equal(t, http.StatusNoContent, e.owner(t, http.MethodPost, base, `{"values":{"name":"Ana","note":null}}`).Code)
+	assert.Equal(t, http.StatusNoContent, e.owner(t, http.MethodPatch, base, `{"key":{"id":"1"},"values":{"name":"Bea"}}`).Code)
+	assert.Equal(t, http.StatusNoContent, e.owner(t, http.MethodDelete, base, `{"key":{"id":"1"}}`).Code)
+	assert.Len(t, e.insp.Writes, 3)
+
+	assert.Equal(t, http.StatusForbidden, e.do(t, http.MethodGet, base, req{as: viewer}).Code, "viewers cannot read client data")
+	assert.Equal(t, http.StatusForbidden, e.do(t, http.MethodPatch, base, req{as: viewer, body: `{"key":{},"values":{}}`}).Code)
+	assert.Equal(t, http.StatusOK, e.do(t, http.MethodGet, base, req{as: operator}).Code)
+
+	e.insp.FailWrite = true
+	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPost, base, `{"values":{}}`).Code)
+	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPost, base, `not json`).Code)
+	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPatch, base, `[]`).Code)
+	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodDelete, base, `x`).Code)
 }

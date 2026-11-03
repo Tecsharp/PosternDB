@@ -1,31 +1,39 @@
-import { useCallback, useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react'
 import { CheckCircleIcon, CopyIcon, DangerTriangleIcon, EyeClosedIcon, EyeIcon, InfoCircleIcon, RefreshIcon } from '@solar-icons/react/linear'
 import { ApiError, type Status } from '../api'
 
 type Variant = 'primary' | 'secondary' | 'danger' | 'ghost'
 
 const variants: Record<Variant, string> = {
-  primary: 'bg-accent text-accent-ink hover:brightness-110 active:brightness-95',
+  primary: 'bg-ink text-bg hover:opacity-90 active:opacity-80',
   secondary: 'bg-surface-3 text-ink hover:brightness-110 active:brightness-95',
   danger: 'bg-danger text-danger-ink hover:brightness-110 active:brightness-95',
   ghost: 'text-ink-2 hover:bg-surface-2 hover:text-ink',
 }
 
-/** macOS push button: compact, 6px radius, filled, no outline. */
+function buttonClass(variant: Variant, size: 'sm' | 'md', extra: string): string {
+  const sizing = size === 'sm' ? 'h-8 px-3 text-[0.85rem] gap-1.5' : 'h-10 px-4 text-[0.95rem] gap-2'
+  return `inline-flex items-center justify-center rounded-[10px] font-medium whitespace-nowrap transition-[filter,background-color,color] duration-100 disabled:cursor-not-allowed disabled:opacity-40 ${sizing} ${variants[variant]} ${extra}`
+}
+
+/** Boton: relleno, sin contorno; el principal es neutro (tinta sobre fondo). */
 export function Button({
   variant = 'secondary',
   size = 'md',
   className = '',
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: 'sm' | 'md' }) {
-  const sizing = size === 'sm' ? 'h-6 px-2.5 text-[12px] gap-1.5' : 'h-7 px-3 text-[13px] gap-1.5'
-  return (
-    <button
-      type="button"
-      className={`inline-flex items-center justify-center rounded-[6px] font-medium whitespace-nowrap transition-[filter,background-color,color] duration-100 disabled:cursor-not-allowed disabled:opacity-40 ${sizing} ${variants[variant]} ${className}`}
-      {...props}
-    />
-  )
+  return <button type="button" className={buttonClass(variant, size, className)} {...props} />
+}
+
+/** A link that looks like a Button (downloads, pages that open in a new tab). */
+export function ButtonLink({
+  variant = 'secondary',
+  size = 'md',
+  className = '',
+  ...props
+}: AnchorHTMLAttributes<HTMLAnchorElement> & { variant?: Variant; size?: 'sm' | 'md' }) {
+  return <a className={buttonClass(variant, size, className)} {...props} />
 }
 
 /** Native <dialog> sheet: focus trap, Escape and inert background for free. */
@@ -69,10 +77,10 @@ export function Sheet({
 export function SheetHeader({ id, title, subtitle }: { id: string; title: ReactNode; subtitle?: ReactNode }) {
   return (
     <header className="px-6 pt-6 pb-2">
-      <h2 id={id} className="text-[15px] font-semibold">
+      <h2 id={id} className="text-[1.05rem] font-semibold">
         {title}
       </h2>
-      {subtitle && <p className="mt-1 text-[13px] leading-relaxed text-ink-2">{subtitle}</p>}
+      {subtitle && <p className="mt-1 text-[0.95rem] leading-relaxed text-ink-2">{subtitle}</p>}
     </header>
   )
 }
@@ -100,7 +108,7 @@ export function CopyButton({ value, label, compact = false }: { value: string; l
           setCopied(true)
         }}
       >
-        {copied ? <CheckCircleIcon size={15} aria-hidden className="text-accent-text" /> : <CopyIcon size={15} aria-hidden />}
+        {copied ? <CheckCircleIcon size={17} aria-hidden className="text-accent-text" /> : <CopyIcon size={17} aria-hidden />}
         {!compact && (copied ? 'Copiado' : 'Copiar')}
       </Button>
       <span role="status" className="sr-only">
@@ -112,8 +120,8 @@ export function CopyButton({ value, label, compact = false }: { value: string; l
 
 export function Spinner({ label }: { label: string }) {
   return (
-    <span role="status" className="inline-flex items-center gap-2 text-[13px] text-ink-2">
-      <RefreshIcon size={16} className="animate-spin" aria-hidden />
+    <span role="status" className="inline-flex items-center gap-2 text-[0.95rem] text-ink-2">
+      <RefreshIcon size={18} className="animate-spin" aria-hidden />
       {label}
     </span>
   )
@@ -129,8 +137,8 @@ export function Loading({ label }: { label: string }) {
 
 export function ErrorNote({ message }: { message: string }) {
   return (
-    <p role="alert" className="flex items-start gap-2 rounded-[8px] bg-danger-soft px-3 py-2 text-[13px] text-danger">
-      <DangerTriangleIcon size={16} aria-hidden className="mt-px shrink-0" />
+    <p role="alert" className="flex items-start gap-2 rounded-[8px] bg-danger-soft px-3 py-2 text-[0.95rem] text-danger">
+      <DangerTriangleIcon size={18} aria-hidden className="mt-px shrink-0" />
       <span>{message}</span>
     </p>
   )
@@ -139,8 +147,8 @@ export function ErrorNote({ message }: { message: string }) {
 export function Notice({ tone = 'info', children }: { tone?: 'warn' | 'info'; children: ReactNode }) {
   const Icon = tone === 'warn' ? DangerTriangleIcon : InfoCircleIcon
   return (
-    <div className={`flex items-start gap-2.5 rounded-[10px] bg-surface px-3.5 py-3 text-[13px] leading-relaxed ${tone === 'warn' ? 'text-warn' : 'text-ink-2'}`}>
-      <Icon size={17} aria-hidden className="mt-px shrink-0" />
+    <div className={`flex items-start gap-2.5 rounded-[10px] bg-surface px-3.5 py-3 text-[0.95rem] leading-relaxed ${tone === 'warn' ? 'text-warn' : 'text-ink-2'}`}>
+      <Icon size={19} aria-hidden className="mt-px shrink-0" />
       <div className="min-w-0">{children}</div>
     </div>
   )
@@ -152,7 +160,7 @@ const statusDot: Record<Status, string> = { activa: 'bg-accent', por_expirar: 'b
 /** Status as a coloured dot and plain text, like macOS service indicators. */
 export function StatusBadge({ status }: { status: Status }) {
   return (
-    <span className="inline-flex items-center gap-1.5 text-[13px] text-ink">
+    <span className="inline-flex items-center gap-1.5 text-[0.95rem] text-ink">
       <span aria-hidden className={`size-2 rounded-full ${statusDot[status]}`} />
       {statusText[status]}
     </span>
@@ -161,7 +169,7 @@ export function StatusBadge({ status }: { status: Status }) {
 
 export function Tag({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'accent' | 'warn' | 'danger' }) {
   const tones = { neutral: 'text-ink-2', accent: 'text-accent-text', warn: 'text-warn', danger: 'text-danger' }
-  return <span className={`inline-flex items-center rounded-[5px] bg-surface-3 px-1.5 py-px text-[11.5px] font-medium ${tones[tone]}`}>{children}</span>
+  return <span className={`inline-flex items-center rounded-[5px] bg-surface-3 px-1.5 py-px text-[0.82rem] font-medium ${tones[tone]}`}>{children}</span>
 }
 
 /** Grouped section: heading outside, borderless filled box inside. */
@@ -182,8 +190,8 @@ export function Panel({ title, actions, children, className = '' }: { title?: Re
 export function EmptyState({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <div className="mx-auto max-w-md px-6 py-12 text-center">
-      <h3 className="text-[14px] font-semibold">{title}</h3>
-      {children && <div className="mt-1 text-[13px] leading-relaxed text-ink-2">{children}</div>}
+      <h3 className="text-[1rem] font-semibold">{title}</h3>
+      {children && <div className="mt-1 text-[0.95rem] leading-relaxed text-ink-2">{children}</div>}
       {action && <div className="mt-4">{action}</div>}
     </div>
   )
@@ -195,9 +203,9 @@ export function Metrics({ items }: { items: { label: string; value: ReactNode; h
     <dl className="group-box grid grid-cols-2 md:grid-cols-4">
       {items.map((m, i) => (
         <div key={m.label} className={`px-4 py-3.5 ${i > 0 ? 'md:shadow-[inset_1px_0_0_var(--hairline)]' : ''} ${i % 2 === 1 ? 'max-md:shadow-[inset_1px_0_0_var(--hairline)]' : ''} ${i > 1 ? 'max-md:shadow-[inset_0_1px_0_var(--hairline)]' : ''}`}>
-          <dt className="text-[12px] text-ink-2">{m.label}</dt>
-          <dd className={`mt-0.5 font-mono text-[20px] font-semibold tracking-tight tabular-nums ${m.tone ?? ''}`}>{m.value}</dd>
-          {m.hint && <dd className="text-[12px] text-ink-3">{m.hint}</dd>}
+          <dt className="text-[0.85rem] text-ink-2">{m.label}</dt>
+          <dd className={`mt-0.5 font-mono text-[1.45rem] font-semibold tracking-tight tabular-nums ${m.tone ?? ''}`}>{m.value}</dd>
+          {m.hint && <dd className="text-[0.85rem] text-ink-3">{m.hint}</dd>}
         </div>
       ))}
     </dl>
@@ -209,9 +217,9 @@ export function SecretField({ label, value }: { label: string; value: string }) 
   const [shown, setShown] = useState(false)
   return (
     <div className="flex items-center gap-1">
-      <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{shown ? value : '•'.repeat(20)}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[0.9rem]">{shown ? value : '•'.repeat(20)}</span>
       <Button variant="ghost" size="sm" className="px-1.5" onClick={() => setShown(!shown)} aria-pressed={shown} aria-label={shown ? `Ocultar ${label}` : `Mostrar ${label}`}>
-        {shown ? <EyeClosedIcon size={15} aria-hidden /> : <EyeIcon size={15} aria-hidden />}
+        {shown ? <EyeClosedIcon size={17} aria-hidden /> : <EyeIcon size={17} aria-hidden />}
       </Button>
       <CopyButton value={value} label={label} compact />
     </div>
@@ -224,9 +232,9 @@ export function KeyValue({ rows, stacked = false }: { rows: [string, ReactNode][
   return (
     <dl className="group-rows">
       {rows.map(([k, v]) => (
-        <div key={k} className={`grid min-h-10 px-4 py-2 ${layout}`}>
-          <dt className="text-[13px] text-ink-2">{k}</dt>
-          <dd className="min-w-0 text-[13px]">{v}</dd>
+        <div key={k} className={`grid min-h-11 px-4 py-2.5 ${layout}`}>
+          <dt className="text-[0.95rem] text-ink-2">{k}</dt>
+          <dd className="min-w-0 text-[0.95rem]">{v}</dd>
         </div>
       ))}
     </dl>
@@ -236,7 +244,7 @@ export function KeyValue({ rows, stacked = false }: { rows: [string, ReactNode][
 export function CodeBlock({ code, label, id }: { code: string; label: string; id?: string }) {
   return (
     <div className="relative">
-      <pre id={id} className="overflow-x-auto rounded-[8px] bg-bg px-3.5 py-3 pr-12 font-mono text-[12px] leading-relaxed text-ink">
+      <pre id={id} className="overflow-x-auto rounded-[8px] bg-bg px-3.5 py-3 pr-12 font-mono text-[0.85rem] leading-relaxed text-ink">
         {code}
       </pre>
       <div className="absolute top-1.5 right-1.5">
@@ -256,8 +264,8 @@ export function Segmented({ label, children }: { label: string; children: ReactN
 }
 
 export const segmentClass = (active: boolean) =>
-  `inline-flex h-6 items-center gap-1.5 rounded-[5px] px-3 text-[12.5px] whitespace-nowrap transition-colors ${
-    active ? 'bg-surface-3 font-semibold text-ink shadow-[0_1px_1px_rgb(0_0_0/0.25)]' : 'text-ink-2 hover:text-ink'
+  `inline-flex h-7 items-center gap-1.5 rounded-[5px] px-3.5 text-[0.9rem] whitespace-nowrap transition-colors ${
+    active ? 'bg-surface font-semibold text-ink shadow-[0_1px_2px_rgb(0_0_0/0.18)]' : 'text-ink-2 hover:text-ink'
   }`
 
 export function errorMessage(err: unknown): string {
@@ -300,4 +308,24 @@ export function useAction() {
     }
   }, [])
   return { busy, error, run, setError }
+}
+
+/** Password field with a button to show or hide what was typed. */
+export function PasswordInput({ className = '', ...props }: Omit<InputHTMLAttributes<HTMLInputElement>, 'type'>) {
+  const [shown, setShown] = useState(false)
+  return (
+    <span className="relative block">
+      <input {...props} type={shown ? 'text' : 'password'} className={`field pr-11 ${className}`} />
+      <button
+        type="button"
+        onClick={() => setShown(!shown)}
+        aria-pressed={shown}
+        aria-label={shown ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+        title={shown ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+        className="absolute inset-y-0 right-0 grid w-11 place-items-center rounded-r-[10px] text-ink-3 hover:text-ink"
+      >
+        {shown ? <EyeClosedIcon size={18} aria-hidden /> : <EyeIcon size={18} aria-hidden />}
+      </button>
+    </span>
+  )
 }

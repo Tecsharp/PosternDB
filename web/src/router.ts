@@ -10,10 +10,22 @@ export type Route =
   | { page: 'templates' }
   | { page: 'activity' }
   | { page: 'admins' }
+  | { page: 'clients' }
+  | { page: 'expiry' }
   | { page: 'settings' }
+  | { page: 'my-databases' }
+  | { page: 'my-database'; slug: string; tab: MyDatabaseTab }
+  | { page: 'my-backups' }
+  | { page: 'my-activity' }
+  | { page: 'my-security' }
+  | { page: 'my-settings' }
+  | { page: 'help' }
 
-export const databaseTabs = ['resumen', 'esquema', 'consola', 'conexion', 'usuarios', 'respaldos', 'ajustes'] as const
+export const databaseTabs = ['resumen', 'datos', 'esquema', 'consola', 'conexion', 'usuarios', 'respaldos', 'ajustes'] as const
 export type DatabaseTab = (typeof databaseTabs)[number]
+
+export const myDatabaseTabs = ['resumen', 'datos', 'esquema', 'conexion', 'ajustes'] as const
+export type MyDatabaseTab = (typeof myDatabaseTabs)[number]
 
 export function parse(path: string): Route {
   const parts = path.split('/').filter(Boolean).map(decodeURIComponent)
@@ -28,8 +40,26 @@ export function parse(path: string): Route {
     case 'templates':
     case 'activity':
     case 'admins':
+    case 'clients':
+    case 'expiry':
     case 'settings':
       return { page: parts[0] }
+    case 'mis-bases':
+      if (parts[1]) {
+        const tab = (myDatabaseTabs as readonly string[]).includes(parts[2] ?? '') ? (parts[2] as MyDatabaseTab) : 'resumen'
+        return { page: 'my-database', slug: parts[1], tab }
+      }
+      return { page: 'my-databases' }
+    case 'mis-respaldos':
+      return { page: 'my-backups' }
+    case 'mi-actividad':
+      return { page: 'my-activity' }
+    case 'seguridad':
+      return { page: 'my-security' }
+    case 'ajustes':
+      return { page: 'my-settings' }
+    case 'ayuda':
+      return { page: 'help' }
     default:
       return { page: 'databases' }
   }
@@ -39,6 +69,15 @@ export function href(route: Route): string {
   if (route.page === 'database') {
     return `/databases/${encodeURIComponent(route.slug)}${route.tab === 'resumen' ? '' : `/${route.tab}`}`
   }
+  if (route.page === 'my-database') {
+    return `/mis-bases/${encodeURIComponent(route.slug)}${route.tab === 'resumen' ? '' : `/${route.tab}`}`
+  }
+  if (route.page === 'my-databases') return '/mis-bases'
+  if (route.page === 'my-backups') return '/mis-respaldos'
+  if (route.page === 'my-activity') return '/mi-actividad'
+  if (route.page === 'my-security') return '/seguridad'
+  if (route.page === 'my-settings') return '/ajustes'
+  if (route.page === 'help') return '/ayuda'
   return `/${route.page}`
 }
 
