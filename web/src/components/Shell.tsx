@@ -202,7 +202,7 @@ export function ClientShell({
         <Logo />
         <div className="flex items-center gap-3">
           <ThemeSwitch compact />
-          <span className="hidden text-[0.9rem] text-ink-2 sm:inline">{session.user}</span>
+          <span className="hidden max-w-[16rem] truncate text-[0.9rem] text-ink-2 sm:inline" title={session.email ?? session.user}>{session.fullName || session.user}</span>
           <Button variant="ghost" size="sm" className="px-1.5" onClick={onChangePassword} aria-label="Cambiar mi contraseña" title="Cambiar mi contraseña">
             <KeyMinimalisticIcon size={18} aria-hidden />
           </Button>

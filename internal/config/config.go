@@ -52,7 +52,19 @@ type Config struct {
 	// client accounts.
 	AllowSelfRegister   bool
 	MaxDatabasesPerUser int
+	// Google enables "Continuar con Google" for registered users.
+	Google GoogleConfig
 }
+
+// GoogleConfig holds the OAuth client created in Google Cloud Console.
+type GoogleConfig struct {
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string
+}
+
+// Enabled reports whether Google sign-in is configured.
+func (g GoogleConfig) Enabled() bool { return g.ClientID != "" && g.ClientSecret != "" }
 
 // NotifyConfig configures expiry warnings. Every channel is optional.
 type NotifyConfig struct {
@@ -169,6 +181,10 @@ func Load(getenv Getenv) (*Config, error) {
 		defaultPanel = DefaultPanelSubdomain + "." + cfg.BaseDomain
 	}
 	cfg.PanelHostname = strings.ToLower(p.optional(EnvPanelHostname, defaultPanel))
+	cfg.Google = GoogleConfig{ClientID: p.value(EnvGoogleClientID), ClientSecret: p.value(EnvGoogleClientSecret), RedirectURL: p.value(EnvGoogleRedirectURL)}
+	if cfg.Google.Enabled() && cfg.Google.RedirectURL == "" {
+		cfg.Google.RedirectURL = defaultGoogleRedirect(local, cfg.PanelHostname, p.positiveInt(EnvPanelLocalPort, DefaultPanelLocalPort))
+	}
 	if token := cloud(EnvCloudflareTunnelToken); token != "" {
 		cfg.Tunnel = p.tunnel(token)
 	}
@@ -250,7 +266,22 @@ func (p *parser) invalidf(format string, args ...any) {
 	p.invalid = append(p.invalid, fmt.Sprintf(format, args...))
 }
 
+// defaultGoogleRedirect is where Google sends people back: the public panel
+// address, or the loopback port in local mode.
+func defaultGoogleRedirect(local bool, panelHost string, localPort int) string {
+	if local {
+		return fmt.Sprintf("http://localhost:%d%s%s", localPort, RouteAPI, RouteGoogleCallback)
+	}
+	return "https://" + panelHost + RouteAPI + RouteGoogleCallback
+}
+
 func (p *parser) validate(cfg *Config) {
+	if (cfg.Google.ClientID == "") != (cfg.Google.ClientSecret == "") {
+		p.invalidf("%s and %s must be set together (or both left empty to disable Google sign-in)", EnvGoogleClientID, EnvGoogleClientSecret)
+	}
+	if u := cfg.Google.RedirectURL; u != "" && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+		p.invalidf("%s must be an http(s) URL", EnvGoogleRedirectURL)
+	}
 	if cfg.Notify.WebhookURL != "" && !strings.HasPrefix(cfg.Notify.WebhookURL, "https://") && !strings.HasPrefix(cfg.Notify.WebhookURL, "http://") {
 		p.invalidf("%s must be an http(s) URL", EnvNotifyWebhookURL)
 	}

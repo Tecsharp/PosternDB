@@ -33,6 +33,7 @@ import (
 	"github.com/tecsharp/posterndb/internal/httpapi"
 	"github.com/tecsharp/posterndb/internal/naming"
 	"github.com/tecsharp/posterndb/internal/notify"
+	"github.com/tecsharp/posterndb/internal/oauth"
 	"github.com/tecsharp/posterndb/internal/provision"
 	"github.com/tecsharp/posterndb/internal/store"
 	"github.com/tecsharp/posterndb/web"
@@ -184,12 +185,18 @@ func serve(ctx context.Context, cfg *config.Config, app *application, logger *sl
 	}
 	go auditor.New(app.meta, app.cluster, app.service, app.notifier, cfg.CheckInterval, logger).Run(ctx)
 
+	var google httpapi.GoogleAuth
+	if cfg.Google.Enabled() {
+		google = oauth.NewGoogle(ctx, cfg.Google.ClientID, cfg.Google.ClientSecret, cfg.Google.RedirectURL)
+		logger.Info("google sign-in enabled", "redirectURL", cfg.Google.RedirectURL)
+	}
 	handler := httpapi.NewRouter(httpapi.Deps{
 		Auth:      auth.New(cfg.AdminUser, cfg.AdminPassword, cfg.JWTSecret, config.SessionTTL, app.admins, app.clients),
 		Limiter:   auth.NewRateLimiter(config.LoginRatePerMinute, config.LoginRateBurst),
 		Databases: app.service,
 		Admins:    app.admins,
 		Clients:   app.clients,
+		Google:    google,
 		Audit:     app.meta,
 		Health:    app.pool,
 		Notifier:  app.notifier,

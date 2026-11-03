@@ -34,6 +34,10 @@ const (
 	EnvLocalDBPort           = "LOCAL_DB_PORT"
 	EnvBackupDir             = "BACKUP_DIR"
 	EnvAllowSelfRegister     = "ALLOW_SELF_REGISTER"
+	EnvGoogleClientID        = "GOOGLE_CLIENT_ID"
+	EnvGoogleClientSecret    = "GOOGLE_CLIENT_SECRET"
+	EnvGoogleRedirectURL     = "GOOGLE_REDIRECT_URL"
+	EnvPanelLocalPort        = "PANEL_LOCAL_PORT"
 	EnvMaxDatabasesPerClient = "MAX_DATABASES_PER_CLIENT"
 	EnvNotifyWebhookURL      = "NOTIFY_WEBHOOK_URL"
 	EnvNotifyEmailTo         = "NOTIFY_EMAIL_TO"
@@ -65,6 +69,7 @@ const (
 	DefaultSMTPPort           = 587
 	LocalHostname             = "localhost"
 	DefaultAllowSelfRegister  = true
+	DefaultPanelLocalPort     = 28437
 	DefaultMaxDBsPerClient    = 3
 	MinClientPasswordLength   = 12
 )
@@ -181,6 +186,8 @@ const (
 	ActionClientDeleted         = "client_deleted"
 	ActionClientExpiryChanged   = "client_expiry_changed"
 	ActionClientPasswordChanged = "client_password_changed"
+	ActionClientPasswordReset   = "client_password_reset"
+	ActionClientGoogleLinked    = "client_google_linked"
 )
 
 // Audit actor names.
@@ -244,6 +251,9 @@ const (
 	RouteClients         = "/clients"
 	RouteClient          = "/clients/{id}"
 	RouteClientExpiry    = "/clients/{id}/expiry"
+	RouteClientPassword  = "/clients/{id}/password"
+	RouteGoogleStart     = "/auth/google/start"
+	RouteGoogleCallback  = "/auth/google/callback"
 	URLParamSlug         = "slug"
 	URLParamID           = "id"
 	URLParamName         = "name"
@@ -272,7 +282,11 @@ const (
 
 // HTTP / session details.
 const (
-	SessionCookieName   = "posterndb_session"
+	SessionCookieName = "posterndb_session"
+	// OAuthCookieName carries state/nonce/PKCE verifier between the Google
+	// redirect and its callback; scoped to OAuthCookiePath only.
+	OAuthCookieName     = "posterndb_oauth"
+	OAuthCookiePath     = "/api/auth/google"
 	SessionTTL          = 12 * time.Hour
 	HeaderContentType   = "Content-Type"
 	HeaderCFConnectIP   = "CF-Connecting-IP"

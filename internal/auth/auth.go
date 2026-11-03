@@ -19,6 +19,8 @@ import (
 	"crypto/subtle"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -41,6 +43,24 @@ type Identity struct {
 	ClientUserID *int64 `json:"-"`
 }
 
+const clientSubjectPrefix = "client:"
+
+// Subject is what goes into the session token. Clients are namespaced by id
+// so a client can never share a token subject with the bootstrap owner or an
+// administrator that happens to use the same name.
+func (i Identity) Subject() string {
+	if i.Role == config.RoleClient && i.ClientUserID != nil {
+		return clientSubjectPrefix + strconv.FormatInt(*i.ClientUserID, 10)
+	}
+	return i.Username
+}
+
+// ClientIdentity builds the identity of a client user.
+func ClientIdentity(u model.ClientUser) Identity {
+	id := u.ID
+	return Identity{Username: u.Username, Role: config.RoleClient, ClientUserID: &id}
+}
+
 // AdminStore authenticates administrators stored in the database (the
 // bootstrap owner from .env is handled here, without the store).
 type AdminStore interface {
@@ -51,7 +71,7 @@ type AdminStore interface {
 // ClientStore authenticates self-service client users (internal/clients).
 type ClientStore interface {
 	Authenticate(ctx context.Context, username, password string) (model.ClientUser, bool, error)
-	Exists(ctx context.Context, username string) (id int64, ok bool, err error)
+	ByID(ctx context.Context, id int64) (model.ClientUser, bool, error)
 }
 
 // Authenticator validates credentials and manages session tokens.
@@ -110,8 +130,7 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (I
 			return Identity{}, false, err
 		}
 		if ok {
-			id := u.ID
-			return Identity{Username: username, Role: config.RoleClient, ClientUserID: &id}, true, nil
+			return ClientIdentity(u), true, nil
 		}
 	}
 	return Identity{}, false, nil
@@ -203,6 +222,11 @@ func (a *Authenticator) identify(r *http.Request) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
+	// Client subjects are checked first and never fall through to the
+	// owner/admin lookups below, whatever name the client chose.
+	if raw, isClient := strings.CutPrefix(subject, clientSubjectPrefix); isClient {
+		return a.identifyClient(r.Context(), raw)
+	}
 	if a.IsBootstrap(subject) {
 		return Identity{Username: subject, Role: config.RoleOwner}, nil
 	}
@@ -211,12 +235,19 @@ func (a *Authenticator) identify(r *http.Request) (Identity, error) {
 			return Identity{Username: subject, Role: role}, nil
 		}
 	}
-	if a.clients != nil {
-		if id, ok, err := a.clients.Exists(r.Context(), subject); err == nil && ok {
-			return Identity{Username: subject, Role: config.RoleClient, ClientUserID: &id}, nil
-		}
-	}
 	return Identity{}, ErrInvalidSession
+}
+
+func (a *Authenticator) identifyClient(ctx context.Context, raw string) (Identity, error) {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || a.clients == nil {
+		return Identity{}, ErrInvalidSession
+	}
+	u, ok, err := a.clients.ByID(ctx, id)
+	if err != nil || !ok {
+		return Identity{}, ErrInvalidSession
+	}
+	return ClientIdentity(u), nil
 }
 
 // FromContext returns the identity stored by Middleware.

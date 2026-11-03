@@ -53,6 +53,11 @@ type env struct {
 
 func newEnv(t *testing.T, health error) env {
 	t.Helper()
+	return newEnvWith(t, health, nil)
+}
+
+func newEnvWith(t *testing.T, health error, google GoogleAuth) env {
+	t.Helper()
 	e := env{
 		meta:     testsupport.NewFakeMetadata(),
 		cluster:  testsupport.NewFakeCluster(),
@@ -82,6 +87,7 @@ func newEnv(t *testing.T, health error) env {
 		Databases: svc,
 		Admins:    adminSvc,
 		Clients:   clientSvc,
+		Google:    google,
 		Audit:     e.meta,
 		Health:    pinger{err: health},
 		Notifier:  e.notifier,
@@ -116,7 +122,13 @@ func (e env) do(t *testing.T, method, path string, o req) *httptest.ResponseReco
 		r.Header.Set(config.HeaderCFConnectIP, o.ip)
 	}
 	if o.as != "" {
-		token, _, err := e.auth.Issue(o.as)
+		subject := o.as
+		for _, u := range e.meta.ClientUsers {
+			if u.Username == o.as {
+				subject = auth.ClientIdentity(*u).Subject()
+			}
+		}
+		token, _, err := e.auth.Issue(subject)
 		require.NoError(t, err)
 		r.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})
 	}
@@ -291,7 +303,8 @@ func TestRoleMatrix(t *testing.T) {
 		{http.MethodGet, "/api/settings/expiry", "", 403, 403},
 		{http.MethodPut, "/api/settings/expiry", `{"expirationDays":45,"expiringSoonDays":10}`, 403, 403},
 		{http.MethodGet, "/api/clients", "", 403, 403},
-		{http.MethodPost, "/api/clients", `{"username":"ana"}`, 403, 403},
+		{http.MethodPost, "/api/clients", `{"email":"ana@example.com","fullName":"Ana López"}`, 403, 403},
+		{http.MethodPost, "/api/clients/1/password", "", 403, 403},
 		{http.MethodPut, "/api/clients/1/expiry", `{"neverExpires":true}`, 403, 403},
 		{http.MethodDelete, "/api/clients/1", "", 403, 403},
 	}
@@ -410,7 +423,7 @@ func TestClientsEndpoints(t *testing.T) {
 	empty := decode[struct{ Clients []model.ClientUser }](t, e.owner(t, http.MethodGet, "/api/clients", ""))
 	assert.Empty(t, empty.Clients)
 
-	rec := e.owner(t, http.MethodPost, "/api/clients", `{"username":"ana"}`)
+	rec := e.owner(t, http.MethodPost, "/api/clients", `{"email":"ana@example.com","fullName":"Ana López"}`)
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 	created := decode[struct {
 		Client   model.ClientUser `json:"client"`
@@ -426,7 +439,16 @@ func TestClientsEndpoints(t *testing.T) {
 
 	list := decode[struct{ Clients []model.ClientUser }](t, e.owner(t, http.MethodGet, "/api/clients", ""))
 	require.Len(t, list.Clients, 1)
-	assert.Equal(t, "ana", list.Clients[0].Username)
+	assert.Equal(t, "ana@example.com", list.Clients[0].Username)
+	assert.Equal(t, "Ana López", list.Clients[0].FullName)
+
+	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPost, "/api/clients", `{"email":"nope","fullName":"Ana López"}`).Code)
+	assert.Equal(t, http.StatusConflict, e.owner(t, http.MethodPost, "/api/clients", `{"email":"ANA@example.com","fullName":"Otra Ana"}`).Code)
+
+	rec = e.owner(t, http.MethodPost, "/api/clients/"+itoa(anaID)+"/password", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.NotEmpty(t, decode[map[string]string](t, rec)["password"])
+	assert.Equal(t, http.StatusNotFound, e.owner(t, http.MethodPost, "/api/clients/9999/password", "").Code)
 
 	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPut, "/api/clients/"+itoa(anaID)+"/expiry", `{"neverExpires":false,"maxIdleDays":0}`).Code)
 

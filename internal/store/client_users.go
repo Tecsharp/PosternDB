@@ -9,8 +9,9 @@ import (
 	"github.com/tecsharp/posterndb/internal/model"
 )
 
-const clientUserColumns = `id, username, password_hash, never_expires, max_idle_days,
-	created_at, created_by, updated_at, updated_by, last_login_at`
+const clientUserColumns = `id, username, COALESCE(password_hash, ''), never_expires, max_idle_days,
+	created_at, created_by, updated_at, updated_by, last_login_at,
+	COALESCE(email, ''), full_name, COALESCE(google_sub, ''), email_verified_at`
 
 // ListClientUsers returns every registered client, for the owner-only
 // "Usuarios" page. Does not include each one's database count; the caller
@@ -33,11 +34,38 @@ func (m *Metadata) GetClientUserByUsername(ctx context.Context, username string)
 	return scanClientUser(m.pool.QueryRow(ctx, `SELECT `+clientUserColumns+` FROM client_users WHERE username = $1`, username))
 }
 
-// CreateClientUser registers a new client. createdBy is "" for self-service
+// GetClientUserByEmail finds an account by its email, ignoring case.
+func (m *Metadata) GetClientUserByEmail(ctx context.Context, email string) (model.ClientUser, error) {
+	return scanClientUser(m.pool.QueryRow(ctx, `SELECT `+clientUserColumns+` FROM client_users WHERE lower(email) = lower($1)`, email))
+}
+
+// GetClientUserByGoogleSub finds the account linked to a Google identity.
+func (m *Metadata) GetClientUserByGoogleSub(ctx context.Context, sub string) (model.ClientUser, error) {
+	return scanClientUser(m.pool.QueryRow(ctx, `SELECT `+clientUserColumns+` FROM client_users WHERE google_sub = $1`, sub))
+}
+
+// CreateClientUser registers a new client. CreatedBy is "" for self-service
 // sign-up, or the admin username when the owner adds one directly.
-func (m *Metadata) CreateClientUser(ctx context.Context, username, passwordHash, createdBy string) (model.ClientUser, error) {
-	return scanClientUser(m.pool.QueryRow(ctx, `INSERT INTO client_users (username, password_hash, created_by)
-		VALUES ($1, $2, $3) RETURNING `+clientUserColumns, username, passwordHash, createdBy))
+func (m *Metadata) CreateClientUser(ctx context.Context, n model.NewClientUser) (model.ClientUser, error) {
+	return scanClientUser(m.pool.QueryRow(ctx, `INSERT INTO client_users
+		(username, email, full_name, password_hash, google_sub, created_by, email_verified_at, email_use_accepted_at)
+		VALUES ($1, NULLIF($2, ''), $3, NULLIF($4, ''), NULLIF($5, ''), $6,
+		        CASE WHEN $7 THEN now() END, CASE WHEN $8 THEN now() END)
+		RETURNING `+clientUserColumns,
+		n.Username, n.Email, n.FullName, n.PasswordHash, n.GoogleSub, n.CreatedBy, n.EmailVerified, n.EmailUseAccepted))
+}
+
+// LinkClientGoogle ties an account to a Google identity and marks its email
+// as verified. resetPassword also removes the password, used when the email
+// had never been verified, so whoever typed it first cannot keep access.
+func (m *Metadata) LinkClientGoogle(ctx context.Context, id int64, sub, fullName string, resetPassword bool) (model.ClientUser, error) {
+	return scanClientUser(m.pool.QueryRow(ctx, `UPDATE client_users SET
+		google_sub = $2,
+		email_verified_at = COALESCE(email_verified_at, now()),
+		full_name = CASE WHEN full_name = '' THEN $3 ELSE full_name END,
+		password_hash = CASE WHEN $4 THEN NULL ELSE password_hash END,
+		updated_at = now()
+		WHERE id = $1 RETURNING `+clientUserColumns, id, sub, fullName, resetPassword))
 }
 
 // UpdateClientUserPassword stores a new password hash.
@@ -67,6 +95,8 @@ func (m *Metadata) DeleteClientUser(ctx context.Context, id int64) error {
 func scanClientUser(row pgx.Row) (model.ClientUser, error) {
 	var u model.ClientUser
 	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.NeverExpires, &u.MaxIdleDays,
-		&u.CreatedAt, &u.CreatedBy, &u.UpdatedAt, &u.UpdatedBy, &u.LastLoginAt)
+		&u.CreatedAt, &u.CreatedBy, &u.UpdatedAt, &u.UpdatedBy, &u.LastLoginAt,
+		&u.Email, &u.FullName, &u.GoogleSub, &u.EmailVerifiedAt)
+	u.Derive()
 	return u, translate(err)
 }

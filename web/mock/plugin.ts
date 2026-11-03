@@ -128,6 +128,10 @@ let globalExpiry: { expirationDays: number | null; expiringSoonDays: number | nu
 type ClientRow = {
   id: number
   username: string
+  email?: string
+  fullName?: string
+  googleLinked: boolean
+  hasPassword: boolean
   neverExpires: boolean
   maxIdleDays?: number
   createdAt: string
@@ -136,7 +140,7 @@ type ClientRow = {
   databaseCount: number
   lastLoginAt?: string
 }
-let clients: ClientRow[] = [{ id: 1, username: 'ana', neverExpires: false, createdAt: iso(-20), createdBy: '', updatedAt: iso(-20), databaseCount: 1, lastLoginAt: iso(-0.5) }]
+let clients: ClientRow[] = [{ id: 1, username: 'ana@ejemplo.com', email: 'ana@ejemplo.com', fullName: 'Ana López', googleLinked: false, hasPassword: true, neverExpires: false, createdAt: iso(-20), createdBy: '', updatedAt: iso(-20), databaseCount: 1, lastLoginAt: iso(-0.5) }]
 let nextClientId = 2
 
 let loggedIn = false
@@ -178,8 +182,8 @@ export function mockApi(): Plugin {
             currentRole = 'owner'
             return send(res, 200, { user: 'admin', role: 'owner' })
           }
-          const client = clients.find((c) => c.username === username)
-          if (client && password === 'ana-password-123') {
+          const client = clients.find((c) => c.username === username || c.email === username)
+          if (client && client.hasPassword && password === 'ana-password-123') {
             loggedIn = true
             currentRole = 'client'
             currentClientId = client.id
@@ -187,13 +191,31 @@ export function mockApi(): Plugin {
           }
           return send(res, 401, { error: 'usuario o contraseña incorrectos' })
         }
-        if (path === '/auth/config') return send(res, 200, { allowSelfRegister: settings.allowSelfRegister })
+        if (path === '/auth/config') return send(res, 200, { allowSelfRegister: settings.allowSelfRegister, googleEnabled: true })
+        if (path === '/auth/google/start') {
+          // Stand-in for Google: signs in a Google-only account and goes back to the panel.
+          let g = clients.find((c) => c.email === 'laura@gmail.com')
+          if (!g) {
+            g = { id: nextClientId++, username: 'laura@gmail.com', email: 'laura@gmail.com', fullName: 'Laura Gómez', googleLinked: true, hasPassword: false, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
+            clients = [...clients, g]
+          }
+          loggedIn = true
+          currentRole = 'client'
+          currentClientId = g.id
+          res.statusCode = 302
+          res.setHeader('Location', '/')
+          return res.end()
+        }
         if (path === '/auth/register') {
-          const { username, password } = (await readJSON(req)) as { username: string; password: string }
+          const { email, fullName, password, acceptEmailUse } = (await readJSON(req)) as { email: string; fullName: string; password: string; acceptEmailUse: boolean }
           if (!settings.allowSelfRegister) return send(res, 400, { error: 'el registro de usuarios está desactivado' })
-          if (clients.some((c) => c.username === username)) return send(res, 409, { error: 'ya existe un elemento con ese nombre' })
+          if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(email))) return send(res, 400, { error: 'escribe un correo válido' })
+          if (String(fullName).trim().length < 2) return send(res, 400, { error: 'escribe tu nombre completo (de 2 a 80 caracteres)' })
+          if (!acceptEmailUse) return send(res, 400, { error: 'debes aceptar cómo usaremos tu correo para crear la cuenta' })
           if (password.length < 12) return send(res, 400, { error: 'la contraseña debe tener al menos 12 caracteres' })
-          const c: ClientRow = { id: nextClientId++, username: String(username), neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
+          const mail = String(email).trim().toLowerCase()
+          if (clients.some((c) => c.email === mail)) return send(res, 409, { error: 'ya existe una cuenta con ese correo: entra con tu contraseña o con Google' })
+          const c: ClientRow = { id: nextClientId++, username: mail, email: mail, fullName: String(fullName).trim(), googleLinked: false, hasPassword: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
           clients = [...clients, c]
           loggedIn = true
           currentRole = 'client'
@@ -208,11 +230,15 @@ export function mockApi(): Plugin {
         if (path === '/auth/session') {
           if (currentRole === 'client') {
             const c = clients.find((x) => x.id === currentClientId)
-            return send(res, 200, { user: c?.username ?? 'cliente', role: 'client', bootstrap: false })
+            return send(res, 200, { user: c?.username ?? 'cliente', role: 'client', bootstrap: false, email: c?.email, fullName: c?.fullName, hasPassword: c?.hasPassword ?? true })
           }
           return send(res, 200, { user: 'admin', role: 'owner', bootstrap: true })
         }
-        if (path === '/me/password' && m === 'POST') return send(res, 204)
+        if (path === '/me/password' && m === 'POST') {
+          const c = clients.find((x) => x.id === currentClientId)
+          if (c) c.hasPassword = true
+          return send(res, 204)
+        }
         if (path === '/settings') return send(res, 200, { ...settings, expirationDays: globalExpiry.expirationDays ?? settings.expirationDays, expiringSoonDays: globalExpiry.expiringSoonDays ?? settings.expiringSoonDays })
         if (path === '/settings/expiry' && m === 'GET') return send(res, 200, globalExpiry)
         if (path === '/settings/expiry' && m === 'PUT') {
@@ -246,8 +272,8 @@ export function mockApi(): Plugin {
         }
         if (path === '/clients' && m === 'GET') return send(res, 200, { clients })
         if (path === '/clients' && m === 'POST') {
-          const { username } = (await readJSON(req)) as { username: string }
-          const c: ClientRow = { id: nextClientId++, username: String(username), neverExpires: false, createdAt: new Date().toISOString(), createdBy: 'admin', updatedAt: new Date().toISOString(), databaseCount: 0 }
+          const { email, fullName } = (await readJSON(req)) as { email: string; fullName: string }
+          const c: ClientRow = { id: nextClientId++, username: String(email).toLowerCase(), email: String(email).toLowerCase(), fullName: String(fullName), googleLinked: false, hasPassword: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: 'admin', updatedAt: new Date().toISOString(), databaseCount: 0 }
           clients = [...clients, c]
           return send(res, 201, { client: c, password: 'Zx81PqLm0vRt5Kd2Wn7Y' })
         }
@@ -257,6 +283,11 @@ export function mockApi(): Plugin {
             const { neverExpires, maxIdleDays } = (await readJSON(req)) as { neverExpires: boolean; maxIdleDays: number | null }
             clients = clients.map((c) => (c.id === id ? { ...c, neverExpires, maxIdleDays: maxIdleDays ?? undefined, updatedAt: new Date().toISOString() } : c))
             return send(res, 200, clients.find((c) => c.id === id))
+          }
+          if (parts[2] === 'password' && m === 'POST') {
+            if (!clients.some((c) => c.id === id)) return send(res, 404, { error: 'no encontrado' })
+            clients = clients.map((c) => (c.id === id ? { ...c, hasPassword: true } : c))
+            return send(res, 200, { password: 'Qm7tVx92LrBn4Zc8Ysp3' })
           }
           if (m === 'DELETE') {
             if (!clients.some((c) => c.id === id)) return send(res, 404, { error: 'no encontrado' })

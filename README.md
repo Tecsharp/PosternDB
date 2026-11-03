@@ -54,6 +54,17 @@ PANEL_HOSTNAME=app.posterndb.com
 - Cada base queda en **`nombre.posterndb.com`**.
 - `posterndb.com` queda libre para tu página.
 
+### Entrar con Google (opcional)
+
+Con esto tus usuarios entran con un clic y, si olvidan su contraseña, la recuperan con Google: sin servidor de correo que configurar.
+
+1. En [Google Cloud Console](https://console.cloud.google.com) crea un proyecto. Ve a **APIs y servicios → Pantalla de consentimiento de OAuth**, elige *Externo* y llena el nombre y tu correo.
+2. En **Credenciales → Crear credenciales → ID de cliente de OAuth**, elige *Aplicación web*.
+3. En **URI de redireccionamiento autorizados** agrega exactamente `https://app.posterndb.com/api/auth/google/callback` (cambia `app.posterndb.com` por tu `PANEL_HOSTNAME`).
+4. Copia el *ID de cliente* y el *secreto* en `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` del `.env` y ejecuta `./setup.sh`.
+
+Si dejas esos dos vacíos, el botón no aparece y todo sigue funcionando con correo y contraseña. Google solo sirve para usuarios: nunca abre el panel de administración.
+
 Si compartes el dominio con otras cosas, usa `CLIENT_HOST_PREFIX=postern-` y las bases quedan como `postern-nombre.tudominio.com`.
 
 Otras opciones útiles del `.env`:
@@ -62,6 +73,7 @@ Otras opciones útiles del `.env`:
 |---|---|---|
 | `DB_EXPIRATION_DAYS` | Días sin uso antes de que una base expire | 30 |
 | `ALLOW_SELF_REGISTER` | `true` deja que cualquiera cree su cuenta | true |
+| `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` | Activan "Continuar con Google" (ver abajo) | vacío (desactivado) |
 | `MAX_DATABASES_PER_CLIENT` | Bases que puede crear cada usuario | 3 |
 | `LOCAL_MODE` | `true` para probar sin Cloudflare, solo en tu máquina | false |
 
@@ -70,7 +82,7 @@ Otras opciones útiles del `.env`:
 Entra a tu panel con el usuario y contraseña que mostró el setup (también están en `.env`).
 
 - **Bases de datos**: crea, mira y borra bases; ve sus tablas y **edita los datos en vivo**, ve el esquema como diagrama y las **conexiones activas**.
-- **Usuarios**: las personas que se registraron. Puedes agregar o quitar usuarios.
+- **Usuarios**: las personas que se registraron (nombre y correo). Puedes agregar o quitar usuarios y generarles una contraseña nueva.
 - **Expiración**: define cuánto tarda una base sin uso en expirar. Se cambia **para todos** o **por usuario** (por ejemplo, "nunca expira" para un amigo). Un usuario puede tener además una excepción en una base concreta.
 - **Plantillas**: bases de ejemplo listas para usar (tareas, blog, tienda, citas, inventario). Marca cuáles ven tus usuarios.
 - **Respaldos**: manuales, descarga y restauración. Antes de borrar una base expirada se guarda una copia.
@@ -78,12 +90,14 @@ Entra a tu panel con el usuario y contraseña que mostró el setup (también est
 
 ## 4. Usar PosternDB (quien se registra)
 
-1. Entra a la dirección del panel y pulsa **Crear cuenta**. Elige un usuario y una contraseña de 12 caracteres o más.
+1. Entra a la dirección del panel y pulsa **Crear cuenta**. Escribe tu nombre completo, tu correo y una contraseña de 12 caracteres o más, y acepta cómo se usará tu correo (para entrar y para recuperar tu cuenta con Google; no se comparte ni se manda publicidad). Si el dueño activó Google, también puedes pulsar **Continuar con Google**.
 2. Pulsa **Nueva base de datos**, ponle un nombre y, si quieres, empieza con una plantilla de muestra.
 3. **Guarda la contraseña que aparece**: solo se muestra una vez (si la pierdes, genera otra en *Ajustes*).
 4. Desde el panel puedes ver y editar tus tablas, ver quién está conectado y cuándo vence tu base.
 
 Solo ves tus propias bases. Conectarte a una base reinicia su contador de inactividad.
+
+**¿Olvidaste tu contraseña?** Entra con Google usando el mismo correo y crea una nueva desde el icono de la llave. Si no hay Google, pídele al dueño una nueva en *Usuarios → Nueva contraseña*.
 
 ### Conectar tu aplicación
 

@@ -20,6 +20,11 @@ export function Clients({ session }: PageProps) {
   const [removing, setRemoving] = useState<ClientUser | null>(null)
   const action = useAction()
 
+  async function resetPassword(u: ClientUser) {
+    const r = await action.run(() => api.resetClientPassword(u.id))
+    if (r) setSecret({ user: u.email || u.username, password: r.password })
+  }
+
   if (!can.manageAdmins(session.role)) {
     return (
       <PageBody>
@@ -51,7 +56,7 @@ export function Clients({ session }: PageProps) {
         <section className="group-box">
           {loading && !data && <Loading label="Cargando…" />}
           <ul className="group-rows">
-            {(data ?? []).map((u) => <ClientRow key={u.id} client={u} onChanged={reload} onRemove={() => setRemoving(u)} />)}
+            {(data ?? []).map((u) => <ClientRow key={u.id} client={u} onChanged={reload} onRemove={() => setRemoving(u)} onResetPassword={() => resetPassword(u)} />)}
             {data && data.length === 0 && <li className="px-5 py-6 text-[0.95rem] text-ink-2">Todavía no hay usuarios registrados.</li>}
           </ul>
         </section>
@@ -111,7 +116,7 @@ export function Clients({ session }: PageProps) {
   )
 }
 
-export function ClientRow({ client, onChanged, onRemove }: { client: ClientUser; onChanged: () => void; onRemove?: () => void }) {
+export function ClientRow({ client, onChanged, onRemove, onResetPassword }: { client: ClientUser; onChanged: () => void; onRemove?: () => void; onResetPassword?: () => void }) {
   const [never, setNever] = useState(client.neverExpires)
   const [custom, setCustom] = useState(client.maxIdleDays !== undefined)
   const [days, setDays] = useState(String(client.maxIdleDays ?? ''))
@@ -127,7 +132,11 @@ export function ClientRow({ client, onChanged, onRemove }: { client: ClientUser;
     <li className="px-5 py-3.5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="font-mono text-[0.97rem] font-semibold">{client.username}</p>
+          <p className="flex flex-wrap items-center gap-2 text-[0.97rem] font-semibold">
+            {client.fullName || client.username}
+            {client.googleLinked && <Tag tone="accent">Google</Tag>}
+          </p>
+          {client.fullName && <p className="font-mono text-[0.85rem] text-ink-2">{client.email || client.username}</p>}
           <p className="text-[0.85rem] text-ink-2">
             {client.databaseCount ?? 0} {client.databaseCount === 1 ? 'base de datos' : 'bases de datos'}
             {' · '}
@@ -157,12 +166,17 @@ export function ClientRow({ client, onChanged, onRemove }: { client: ClientUser;
               max={3650}
               value={days}
               onChange={(e) => setDays(e.target.value)}
-              aria-label={`Días propios para ${client.username}`}
+              aria-label={`Días propios para ${client.email || client.username}`}
             />
           )}
           <Button size="sm" type="submit" variant="primary" disabled={save.busy}>
             {save.busy ? 'Guardando…' : 'Guardar'}
           </Button>
+          {onResetPassword && (
+            <Button size="sm" variant="ghost" onClick={onResetPassword}>
+              Nueva contraseña
+            </Button>
+          )}
           {onRemove && (
             <Button size="sm" variant="ghost" className="hover:text-danger" onClick={onRemove}>
               Quitar
@@ -180,32 +194,38 @@ export function ClientRow({ client, onChanged, onRemove }: { client: ClientUser;
 }
 
 function AddClientSheet({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (u: string, p: string) => void }) {
-  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
+  const [fullName, setFullName] = useState('')
   const { busy, error, run } = useAction()
 
   async function submit(e: FormEvent) {
     e.preventDefault()
-    const r = await run(() => api.createClient(username))
+    const r = await run(() => api.createClient(email, fullName))
     if (r) {
-      setUsername('')
-      onCreated(r.client.username, r.password)
+      setEmail('')
+      setFullName('')
+      onCreated(r.client.email || r.client.username, r.password)
     }
   }
 
   return (
     <Sheet open={open} onClose={onClose} labelledBy="add-client">
       <form onSubmit={submit}>
-        <SheetHeader id="add-client" title="Agregar usuario" subtitle="Se genera una contraseña que verás una sola vez. Entrará al panel reducido, no al panel admin." />
+        <SheetHeader id="add-client" title="Agregar usuario" subtitle="Se genera una contraseña que verás una sola vez. Entrará al panel reducido, no al panel admin. También podrá entrar con Google usando ese correo." />
         <div className="space-y-4 px-6 py-5">
           <label className="block">
-            <span className="label">Usuario</span>
-            <input className="field" autoFocus required autoCapitalize="none" spellCheck={false} placeholder="ana" value={username} onChange={(e) => setUsername(e.target.value)} />
+            <span className="label">Nombre completo</span>
+            <input className="field" autoFocus required minLength={2} maxLength={80} placeholder="Ana López" value={fullName} onChange={(e) => setFullName(e.target.value)} />
+          </label>
+          <label className="block">
+            <span className="label">Correo</span>
+            <input className="field" type="email" required autoCapitalize="none" spellCheck={false} placeholder="ana@ejemplo.com" value={email} onChange={(e) => setEmail(e.target.value)} />
           </label>
           {error && <ErrorNote message={error} />}
         </div>
         <SheetFooter>
           <Button onClick={onClose}>Cancelar</Button>
-          <Button type="submit" variant="primary" disabled={busy || !username.trim()}>
+          <Button type="submit" variant="primary" disabled={busy || !email.trim() || !fullName.trim()}>
             {busy ? 'Creando…' : 'Crear acceso'}
           </Button>
         </SheetFooter>

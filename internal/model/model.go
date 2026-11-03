@@ -266,6 +266,33 @@ type ClientUser struct {
 	UpdatedBy     string     `json:"updatedBy,omitempty"`
 	DatabaseCount int        `json:"databaseCount,omitempty"`
 	LastLoginAt   *time.Time `json:"lastLoginAt,omitempty"`
+	// Identity: the email is also the username of every new account.
+	Email           string     `json:"email,omitempty"`
+	FullName        string     `json:"fullName,omitempty"`
+	GoogleSub       string     `json:"-"`
+	EmailVerifiedAt *time.Time `json:"emailVerifiedAt,omitempty"`
+	// Derived from the sensitive fields above by Derive; safe to serialise.
+	GoogleLinked bool `json:"googleLinked"`
+	HasPassword  bool `json:"hasPassword"`
+}
+
+// Derive fills the fields computed from PasswordHash and GoogleSub.
+func (u *ClientUser) Derive() {
+	u.GoogleLinked = u.GoogleSub != ""
+	u.HasPassword = u.PasswordHash != ""
+}
+
+// NewClientUser is everything needed to create an account. PasswordHash and
+// GoogleSub may each be empty, but not both.
+type NewClientUser struct {
+	Username         string
+	Email            string
+	FullName         string
+	PasswordHash     string
+	GoogleSub        string
+	CreatedBy        string // "" = self-registered
+	EmailVerified    bool
+	EmailUseAccepted bool
 }
 
 // PlatformSettings overrides the .env inactivity policy at runtime. A nil

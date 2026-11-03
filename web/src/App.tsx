@@ -50,7 +50,7 @@ function ClientWorkspace({ session, onLoggedOut }: { session: Session; onLoggedO
   return (
     <ClientShell session={session} onLogout={logout} onChangePassword={() => setChangingPassword(true)}>
       {route.page === 'my-database' ? <MyDatabaseDetail key={route.slug} slug={route.slug} tab={route.tab} /> : <MyDatabases />}
-      <ChangePasswordSheet open={changingPassword} onClose={() => setChangingPassword(false)} changePassword={me.changePassword} />
+      <ChangePasswordSheet open={changingPassword} onClose={() => setChangingPassword(false)} changePassword={me.changePassword} needsCurrent={session.hasPassword !== false} />
     </ClientShell>
   )
 }
@@ -97,10 +97,12 @@ function ChangePasswordSheet({
   open,
   onClose,
   changePassword,
+  needsCurrent = true,
 }: {
   open: boolean
   onClose: () => void
   changePassword: (current: string, next: string) => Promise<void>
+  needsCurrent?: boolean
 }) {
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
@@ -123,7 +125,7 @@ function ChangePasswordSheet({
   return (
     <Sheet open={open} onClose={close} labelledBy="pw-title">
       <form onSubmit={submit}>
-        <SheetHeader id="pw-title" title="Cambiar mi contraseña" subtitle="Mínimo 12 caracteres." />
+        <SheetHeader id="pw-title" title={needsCurrent ? 'Cambiar mi contraseña' : 'Crear una contraseña'} subtitle={needsCurrent ? 'Mínimo 12 caracteres.' : 'Entras con Google y aún no tienes contraseña. Mínimo 12 caracteres.'} />
         <div className="space-y-4 px-6 py-5">
           {done ? (
             <p role="status" className="text-[0.95rem] text-accent-text">
@@ -131,10 +133,12 @@ function ChangePasswordSheet({
             </p>
           ) : (
             <>
-              <label className="block">
-                <span className="label">Contraseña actual</span>
-                <input className="field" type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
-              </label>
+              {needsCurrent && (
+                <label className="block">
+                  <span className="label">Contraseña actual</span>
+                  <input className="field" type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
+                </label>
+              )}
               <label className="block">
                 <span className="label">Contraseña nueva</span>
                 <input className="field" type="password" autoComplete="new-password" minLength={12} required value={next} onChange={(e) => setNext(e.target.value)} />
@@ -147,7 +151,7 @@ function ChangePasswordSheet({
           <Button onClick={close}>{done ? 'Cerrar' : 'Cancelar'}</Button>
           {!done && (
             <Button type="submit" variant="primary" disabled={busy}>
-              {busy ? 'Guardando…' : 'Cambiar contraseña'}
+              {busy ? 'Guardando…' : needsCurrent ? 'Cambiar contraseña' : 'Crear contraseña'}
             </Button>
           )}
         </SheetFooter>

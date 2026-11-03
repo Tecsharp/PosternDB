@@ -58,12 +58,16 @@ func (f fakeClients) Authenticate(_ context.Context, u, p string) (model.ClientU
 	return model.ClientUser{}, false, nil
 }
 
-func (f fakeClients) Exists(_ context.Context, u string) (int64, bool, error) {
+func (f fakeClients) ByID(_ context.Context, id int64) (model.ClientUser, bool, error) {
 	if f.err != nil {
-		return 0, false, f.err
+		return model.ClientUser{}, false, f.err
 	}
-	cu, ok := f.users[u]
-	return cu.id, ok, nil
+	for name, cu := range f.users {
+		if cu.id == id {
+			return model.ClientUser{ID: id, Username: name}, true, nil
+		}
+	}
+	return model.ClientUser{}, false, nil
 }
 
 func newWithAdmins() *Authenticator {
@@ -126,7 +130,7 @@ func TestMiddlewareResolvesClientIdentity(t *testing.T) {
 	var got Identity
 	h := a.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = FromContext(r.Context()) }))
 
-	token, _, err := a.Issue("bea")
+	token, _, err := a.Issue(ClientIdentity(model.ClientUser{ID: 7, Username: "bea"}).Subject())
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})
@@ -195,4 +199,35 @@ func TestAllowsAndRequireRole(t *testing.T) {
 		assert.Equal(t, want, rec.Code, role)
 	}
 	assert.True(t, newAuth().IsBootstrap("admin"))
+}
+
+// A client who picked the same name as the owner or an administrator must
+// stay a client: their session subject is namespaced by id.
+func TestClientSessionNeverResolvesAsAdminWithTheSameName(t *testing.T) {
+	clients := fakeClients{users: map[string]fakeClientUser{"root": {id: 7, password: "x"}, "bea": {id: 8, password: "x"}}}
+	a := New("root", "p", secret, time.Hour, fakeAdmins{roles: map[string]string{"bea": config.RoleOwner}}, clients)
+	resolve := func(subject string) (Identity, int) {
+		token, _, err := a.Issue(subject)
+		require.NoError(t, err)
+		var got Identity
+		h := a.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = FromContext(r.Context()) }))
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return got, rec.Code
+	}
+
+	for name, id := range map[string]int64{"root": 7, "bea": 8} {
+		got, code := resolve(ClientIdentity(model.ClientUser{ID: id, Username: name}).Subject())
+		assert.Equal(t, http.StatusOK, code)
+		assert.Equal(t, config.RoleClient, got.Role, "client %q must not become owner/admin", name)
+	}
+	got, _ := resolve("bea")
+	assert.Equal(t, config.RoleOwner, got.Role, "the real admin keeps their plain subject")
+
+	_, code := resolve("client:999")
+	assert.Equal(t, http.StatusUnauthorized, code, "unknown client id")
+	_, code = resolve("client:abc")
+	assert.Equal(t, http.StatusUnauthorized, code, "malformed client subject")
 }

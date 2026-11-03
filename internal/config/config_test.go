@@ -182,3 +182,59 @@ func TestNotifyConfig(t *testing.T) {
 	assert.ErrorContains(t, err, EnvNotifyWebhookURL)
 	assert.False(t, NotifyConfig{SMTPHost: "h"}.EmailEnabled())
 }
+
+func TestGoogleSignInIsOffByDefault(t *testing.T) {
+	cfg, err := Load(getenv(validEnv()))
+	require.NoError(t, err)
+	assert.False(t, cfg.Google.Enabled())
+	assert.Empty(t, cfg.Google.RedirectURL)
+}
+
+func TestGoogleRedirectDefaultsToThePanelAddress(t *testing.T) {
+	env := validEnv()
+	env[EnvPanelHostname] = "app.pachislab.com"
+	env[EnvGoogleClientID] = "id.apps.googleusercontent.com"
+	env[EnvGoogleClientSecret] = "secret"
+	cfg, err := Load(getenv(env))
+	require.NoError(t, err)
+	assert.True(t, cfg.Google.Enabled())
+	assert.Equal(t, "https://app.pachislab.com/api/auth/google/callback", cfg.Google.RedirectURL)
+
+	env[EnvGoogleRedirectURL] = "https://elsewhere.example/api/auth/google/callback"
+	cfg, err = Load(getenv(env))
+	require.NoError(t, err)
+	assert.Equal(t, "https://elsewhere.example/api/auth/google/callback", cfg.Google.RedirectURL, "an explicit value wins")
+}
+
+func TestGoogleRedirectInLocalModeUsesTheLoopbackPort(t *testing.T) {
+	env := map[string]string{
+		EnvAdminUser: "admin", EnvAdminPassword: "a-very-long-password", EnvJWTSecret: strings.Repeat("s", 40),
+		EnvPostgresUser: "posterndb", EnvPostgresPassword: "pw", EnvPostgresDB: "posterndb",
+		EnvLocalMode: "true", EnvGoogleClientID: "id", EnvGoogleClientSecret: "secret",
+	}
+	cfg, err := Load(getenv(env))
+	require.NoError(t, err)
+	assert.Equal(t, "http://localhost:28437/api/auth/google/callback", cfg.Google.RedirectURL)
+
+	env[EnvPanelLocalPort] = "31000"
+	cfg, err = Load(getenv(env))
+	require.NoError(t, err)
+	assert.Equal(t, "http://localhost:31000/api/auth/google/callback", cfg.Google.RedirectURL)
+}
+
+func TestGoogleNeedsBothClientIDAndSecret(t *testing.T) {
+	for _, only := range []string{EnvGoogleClientID, EnvGoogleClientSecret} {
+		env := validEnv()
+		env[only] = "x"
+		_, err := Load(getenv(env))
+		require.Error(t, err, only)
+		assert.Contains(t, err.Error(), EnvGoogleClientID)
+		assert.Contains(t, err.Error(), EnvGoogleClientSecret)
+	}
+
+	env := validEnv()
+	env[EnvGoogleClientID], env[EnvGoogleClientSecret], env[EnvGoogleRedirectURL] = "id", "secret", "not-a-url"
+	_, err := Load(getenv(env))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), EnvGoogleRedirectURL)
+}

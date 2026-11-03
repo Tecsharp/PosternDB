@@ -8,6 +8,22 @@ export interface Session {
   user: string
   role: Role
   bootstrap: boolean
+  // Only for role "client".
+  email?: string
+  fullName?: string
+  hasPassword?: boolean
+}
+
+export interface RegisterForm {
+  email: string
+  fullName: string
+  password: string
+  acceptEmailUse: boolean
+}
+
+export interface PublicConfig {
+  allowSelfRegister: boolean
+  googleEnabled: boolean
 }
 
 export interface Database {
@@ -192,6 +208,10 @@ export interface AuditEntry {
 export interface ClientUser {
   id: number
   username: string
+  email?: string
+  fullName?: string
+  googleLinked: boolean
+  hasPassword: boolean
   neverExpires: boolean
   maxIdleDays?: number
   createdAt: string
@@ -274,9 +294,9 @@ const tablePath = (slug: string, schema: string, table: string) =>
 export const api = {
   session: () => request<Session>('GET', '/auth/session'),
   login: (username: string, password: string) => request<Session>('POST', '/auth/login', { username, password }),
-  register: (username: string, password: string) => request<Session>('POST', '/auth/register', { username, password }),
+  register: (form: RegisterForm) => request<Session>('POST', '/auth/register', form),
   logout: () => request<void>('POST', '/auth/logout'),
-  publicConfig: () => request<{ allowSelfRegister: boolean }>('GET', '/auth/config'),
+  publicConfig: () => request<PublicConfig>('GET', '/auth/config'),
   changePassword: (current: string, next: string) => request<void>('POST', '/auth/password', { current, next }),
   settings: () => request<Settings>('GET', '/settings'),
   testNotification: () => request<void>('POST', '/notifications/test'),
@@ -284,7 +304,8 @@ export const api = {
   setGlobalExpiry: (expirationDays: number | null, expiringSoonDays: number | null) =>
     request<PlatformSettings>('PUT', '/settings/expiry', { expirationDays, expiringSoonDays }),
   clients: () => request<{ clients: ClientUser[] }>('GET', '/clients').then((r) => r.clients),
-  createClient: (username: string) => request<{ client: ClientUser; password: string }>('POST', '/clients', { username }),
+  createClient: (email: string, fullName: string) => request<{ client: ClientUser; password: string }>('POST', '/clients', { email, fullName }),
+  resetClientPassword: (id: number) => request<{ password: string }>('POST', `/clients/${id}/password`),
   setClientExpiry: (id: number, neverExpires: boolean, maxIdleDays: number | null) =>
     request<ClientUser>('PUT', `/clients/${id}/expiry`, { neverExpires, maxIdleDays }),
   deleteClient: (id: number) => request<void>('DELETE', `/clients/${id}`),

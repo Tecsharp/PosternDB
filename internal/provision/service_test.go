@@ -515,7 +515,7 @@ func TestCreateViaAdminPanelHasNoClientUser(t *testing.T) {
 
 func TestCreateForClientRecordsClientUserID(t *testing.T) {
 	h := newHarness(true, testsupport.FakeSecrets{})
-	ana, err := h.meta.CreateClientUser(context.Background(), "ana", "hash", "")
+	ana, err := h.meta.CreateClientUser(context.Background(), model.NewClientUser{Username: "ana", PasswordHash: "hash"})
 	require.NoError(t, err)
 	_, err = h.svc.Create(context.Background(), CreateRequest{Name: "ana-app", ClientUserID: &ana.ID}, "ana")
 	require.NoError(t, err)
@@ -531,7 +531,7 @@ func TestClientExpiryPrecedence(t *testing.T) {
 
 	// ana never expires; her databases should all be unlimited unless one
 	// has its own exception.
-	ana, err := h.meta.CreateClientUser(ctx, "ana", "hash", "")
+	ana, err := h.meta.CreateClientUser(ctx, model.NewClientUser{Username: "ana", PasswordHash: "hash"})
 	require.NoError(t, err)
 	_, err = h.svc.SetClientExpiry(ctx, ana.ID, true, nil, "root")
 	require.NoError(t, err)
@@ -573,7 +573,7 @@ func TestClientExpiryPrecedence(t *testing.T) {
 func TestSetClientExpiryValidationAndAudit(t *testing.T) {
 	h := newHarness(true, testsupport.FakeSecrets{})
 	ctx := context.Background()
-	ana, err := h.meta.CreateClientUser(ctx, "ana", "hash", "")
+	ana, err := h.meta.CreateClientUser(ctx, model.NewClientUser{Username: "ana", PasswordHash: "hash"})
 	require.NoError(t, err)
 
 	var invalidErr *InvalidInputError

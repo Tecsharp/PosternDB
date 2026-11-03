@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -752,21 +753,72 @@ func (m *FakeMetadata) GetClientUserByUsername(_ context.Context, username strin
 }
 
 // CreateClientUser stores a new client.
-func (m *FakeMetadata) CreateClientUser(_ context.Context, username, passwordHash, createdBy string) (model.ClientUser, error) {
+func (m *FakeMetadata) CreateClientUser(_ context.Context, n model.NewClientUser) (model.ClientUser, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.FailInsert {
 		return model.ClientUser{}, ErrInjected
 	}
 	for _, u := range m.ClientUsers {
-		if u.Username == username {
+		if u.Username == n.Username || (n.Email != "" && strings.EqualFold(u.Email, n.Email)) || (n.GoogleSub != "" && u.GoogleSub == n.GoogleSub) {
 			return model.ClientUser{}, model.ErrConflict
 		}
 	}
 	m.nextUserID++
-	u := model.ClientUser{ID: m.nextUserID, Username: username, PasswordHash: passwordHash, CreatedBy: createdBy}
+	u := model.ClientUser{ID: m.nextUserID, Username: n.Username, Email: n.Email, FullName: n.FullName,
+		PasswordHash: n.PasswordHash, GoogleSub: n.GoogleSub, CreatedBy: n.CreatedBy}
+	if n.EmailVerified {
+		now := time.Now()
+		u.EmailVerifiedAt = &now
+	}
+	u.Derive()
 	m.ClientUsers[u.ID] = &u
 	return u, nil
+}
+
+// GetClientUserByEmail finds an account by email, ignoring case.
+func (m *FakeMetadata) GetClientUserByEmail(_ context.Context, email string) (model.ClientUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range m.ClientUsers {
+		if u.Email != "" && strings.EqualFold(u.Email, email) {
+			return *u, nil
+		}
+	}
+	return model.ClientUser{}, model.ErrNotFound
+}
+
+// GetClientUserByGoogleSub finds the account linked to a Google identity.
+func (m *FakeMetadata) GetClientUserByGoogleSub(_ context.Context, sub string) (model.ClientUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range m.ClientUsers {
+		if u.GoogleSub != "" && u.GoogleSub == sub {
+			return *u, nil
+		}
+	}
+	return model.ClientUser{}, model.ErrNotFound
+}
+
+// LinkClientGoogle ties an account to a Google identity.
+func (m *FakeMetadata) LinkClientGoogle(_ context.Context, id int64, sub, fullName string, resetPassword bool) (model.ClientUser, error) {
+	var out model.ClientUser
+	err := m.clientUser(id, func(u *model.ClientUser) {
+		u.GoogleSub = sub
+		if u.EmailVerifiedAt == nil {
+			now := time.Now()
+			u.EmailVerifiedAt = &now
+		}
+		if u.FullName == "" {
+			u.FullName = fullName
+		}
+		if resetPassword {
+			u.PasswordHash = ""
+		}
+		u.Derive()
+		out = *u
+	})
+	return out, err
 }
 
 func (m *FakeMetadata) clientUser(id int64, fn func(*model.ClientUser)) error {
@@ -780,6 +832,7 @@ func (m *FakeMetadata) clientUser(id int64, fn func(*model.ClientUser)) error {
 		return model.ErrNotFound
 	}
 	fn(u)
+	u.Derive()
 	return nil
 }
 

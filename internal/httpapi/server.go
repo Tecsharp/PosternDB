@@ -22,6 +22,7 @@ import (
 	"github.com/tecsharp/posterndb/internal/config"
 	"github.com/tecsharp/posterndb/internal/model"
 	"github.com/tecsharp/posterndb/internal/notify"
+	"github.com/tecsharp/posterndb/internal/oauth"
 	"github.com/tecsharp/posterndb/internal/provision"
 )
 
@@ -82,10 +83,19 @@ type Admins interface {
 // expiry exception live on Databases (provision.Service), which already
 // enriches each client with its database count.
 type Clients interface {
-	Register(ctx context.Context, username, password string) (model.ClientUser, error)
-	Create(ctx context.Context, username, actor string) (model.ClientUser, string, error)
+	Register(ctx context.Context, in clients.RegisterInput) (model.ClientUser, error)
+	Create(ctx context.Context, email, fullName, actor string) (model.ClientUser, string, error)
+	LoginWithGoogle(ctx context.Context, g oauth.Profile) (model.ClientUser, error)
+	ByID(ctx context.Context, id int64) (model.ClientUser, bool, error)
 	ChangeOwnPassword(ctx context.Context, id int64, current, next string) error
+	ResetPassword(ctx context.Context, id int64, actor string) (string, error)
 	Delete(ctx context.Context, id int64, actor string) error
+}
+
+// GoogleAuth is the Google sign-in flow; nil in Deps disables it.
+type GoogleAuth interface {
+	AuthURL(state, nonce, verifier string) string
+	Exchange(ctx context.Context, code, verifier, nonce string) (oauth.Profile, error)
 }
 
 // AuditReader lists audit_log entries.
@@ -132,6 +142,7 @@ type Deps struct {
 	Databases Databases
 	Admins    Admins
 	Clients   Clients
+	Google    GoogleAuth
 	Audit     AuditReader
 	Health    Pinger
 	Notifier  Notifier
@@ -157,6 +168,8 @@ func NewRouter(d Deps) http.Handler {
 		api.With(d.Limiter.Middleware).Post(config.RouteLogin, s.login)
 		api.With(d.Limiter.Middleware).Post(config.RouteRegister, s.register)
 		api.Get(config.RoutePublicConfig, s.publicConfig)
+		api.With(d.Limiter.Middleware).Get(config.RouteGoogleStart, s.googleStart)
+		api.With(d.Limiter.Middleware).Get(config.RouteGoogleCallback, s.googleCallback)
 		api.Post(config.RouteLogout, s.logout)
 		api.Group(func(p chi.Router) {
 			p.Use(d.Auth.Middleware)
@@ -230,6 +243,7 @@ func (s *server) ownerRoutes(r chi.Router) {
 	r.Post(config.RouteClients, s.createClient)
 	r.Delete(config.RouteClient, s.deleteClient)
 	r.Put(config.RouteClientExpiry, s.setClientExpiry)
+	r.Post(config.RouteClientPassword, s.resetClientPassword)
 }
 
 // clientRoutes is the reduced "panel de usuario": a self-service client can
@@ -300,7 +314,7 @@ func (s *server) settings(w http.ResponseWriter, r *http.Request) {
 // publicConfig is the only unauthenticated config: the login screen needs to
 // know whether to offer "Crear cuenta".
 func (s *server) publicConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"allowSelfRegister": s.Settings.AllowSelfRegister})
+	writeJSON(w, http.StatusOK, map[string]bool{"allowSelfRegister": s.Settings.AllowSelfRegister, "googleEnabled": s.Google != nil})
 }
 
 func (s *server) listAudit(w http.ResponseWriter, r *http.Request) {
@@ -363,6 +377,8 @@ func (s *server) domainError(w http.ResponseWriter, op string, err error) {
 		writeError(w, http.StatusBadRequest, invalidInput.Error())
 	case isAdminValidation(err), isClientValidation(err):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, clients.ErrEmailTaken):
+		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, model.ErrConflict):
 		writeError(w, http.StatusConflict, "ya existe un elemento con ese nombre")
 	case errors.Is(err, model.ErrNotFound):
@@ -373,7 +389,7 @@ func (s *server) domainError(w http.ResponseWriter, op string, err error) {
 }
 
 func isClientValidation(err error) bool {
-	for _, e := range []error{clients.ErrUsername, clients.ErrWeakPassword, clients.ErrWrongPassword, clients.ErrRegisterDisabled} {
+	for _, e := range []error{clients.ErrEmail, clients.ErrFullName, clients.ErrEmailUseNotAccepted, clients.ErrWeakPassword, clients.ErrWrongPassword, clients.ErrRegisterDisabled} {
 		if errors.Is(err, e) {
 			return true
 		}

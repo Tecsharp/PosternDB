@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/tecsharp/posterndb/internal/auth"
+	"github.com/tecsharp/posterndb/internal/clients"
 	"github.com/tecsharp/posterndb/internal/config"
 )
 
@@ -36,7 +37,7 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "usuario o contraseña incorrectos")
 		return
 	}
-	token, exp, err := s.Auth.Issue(id.Username)
+	token, exp, err := s.Auth.Issue(id.Subject())
 	if err != nil {
 		s.internalError(w, "issue session", err)
 		return
@@ -48,18 +49,26 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 
 // register lets a client create their own account, publicly and without an
 // admin. s.Clients.Register itself refuses when ALLOW_SELF_REGISTER=false.
+type registerRequest struct {
+	Email          string `json:"email"`
+	FullName       string `json:"fullName"`
+	Password       string `json:"password"`
+	AcceptEmailUse bool   `json:"acceptEmailUse"`
+}
+
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
-	var req loginRequest
+	var req registerRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	req.Username = strings.TrimSpace(req.Username)
-	u, err := s.Clients.Register(r.Context(), req.Username, req.Password)
+	u, err := s.Clients.Register(r.Context(), clients.RegisterInput{
+		Email: req.Email, FullName: req.FullName, Password: req.Password, AcceptEmailUse: req.AcceptEmailUse,
+	})
 	if err != nil {
 		s.domainError(w, "register", err)
 		return
 	}
-	token, exp, err := s.Auth.Issue(u.Username)
+	token, exp, err := s.Auth.Issue(auth.ClientIdentity(u).Subject())
 	if err != nil {
 		s.internalError(w, "issue session", err)
 		return
@@ -75,9 +84,15 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	id := auth.FromContext(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{
-		"user": id.Username, "role": id.Role, "bootstrap": s.Auth.IsBootstrap(id.Username),
-	})
+	out := map[string]any{
+		"user": id.Username, "role": id.Role, "bootstrap": id.Role == config.RoleOwner && s.Auth.IsBootstrap(id.Username),
+	}
+	if id.ClientUserID != nil {
+		if u, ok, err := s.Clients.ByID(r.Context(), *id.ClientUserID); err == nil && ok {
+			out["email"], out["fullName"], out["hasPassword"] = u.Email, u.FullName, u.HasPassword
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type passwordChange struct {
@@ -152,7 +167,8 @@ func (s *server) listClients(w http.ResponseWriter, r *http.Request) {
 }
 
 type clientRequest struct {
-	Username string `json:"username"`
+	Email    string `json:"email"`
+	FullName string `json:"fullName"`
 }
 
 func (s *server) createClient(w http.ResponseWriter, r *http.Request) {
@@ -160,8 +176,17 @@ func (s *server) createClient(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	u, password, err := s.Clients.Create(r.Context(), req.Username, actor(r))
+	u, password, err := s.Clients.Create(r.Context(), req.Email, req.FullName, actor(r))
 	s.secret(w, http.StatusCreated, "create client", map[string]any{"client": u, "password": password}, err)
+}
+
+func (s *server) resetClientPassword(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	password, err := s.Clients.ResetPassword(r.Context(), id, actor(r))
+	s.secret(w, http.StatusOK, "reset client password", map[string]string{"password": password}, err)
 }
 
 func (s *server) deleteClient(w http.ResponseWriter, r *http.Request) {
