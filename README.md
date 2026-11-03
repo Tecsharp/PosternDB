@@ -94,7 +94,7 @@ Entra a tu panel con el usuario y contraseña que mostró el setup (también est
 ## 4. Usar PosternDB (quien se registra)
 
 1. Entra a la dirección del panel y pulsa **Crear cuenta**. (Si entras con Google, la primera vez eliges tu nombre de usuario). Escribe tu nombre completo, tu correo y una contraseña de 12 caracteres o más, y acepta cómo se usará tu correo (para entrar y para recuperar tu cuenta con Google; no se comparte ni se manda publicidad). Si el dueño activó Google, también puedes pulsar **Continuar con Google**.
-2. Pulsa **Nueva base de datos**, ponle un nombre y, si quieres, empieza con una plantilla de muestra.
+2. Pulsa **Nueva base de datos**, ponle un nombre y, si quieres, empieza con una plantilla de muestra. Tu base se llamará con **tu código personal** al inicio (por ejemplo `k7x9qa-tienda`), y su dirección será `k7x9qa-tienda.posterndb.com`. Así dos personas pueden usar el mismo nombre sin chocar. Tu código lo ves en *Ajustes*.
 3. **Guarda la contraseña que aparece**: solo se muestra una vez (si la pierdes, genera otra en *Ajustes*).
 4. Desde el panel puedes ver y editar tus tablas, ver quién está conectado y cuándo vence tu base.
 

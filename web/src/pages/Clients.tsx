@@ -136,7 +136,12 @@ export function ClientRow({ client, onChanged, onRemove, onResetPassword }: { cl
             {client.fullName || client.username}
             {client.googleLinked && <Tag tone="accent">Google</Tag>}
           </p>
-          {client.fullName && <p className="font-mono text-[0.85rem] text-ink-2">{client.email || client.username}</p>}
+          {client.fullName && (
+            <p className="font-mono text-[0.85rem] text-ink-2">
+              {client.email || client.username}
+              {client.code && <span className="ml-2 text-ink-3">código {client.code}</span>}
+            </p>
+          )}
           <p className="text-[0.85rem] text-ink-2">
             {client.databaseCount ?? 0} {client.databaseCount === 1 ? 'base de datos' : 'bases de datos'}
             {' · '}

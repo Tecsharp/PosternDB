@@ -74,11 +74,12 @@ export function MySettings() {
           <KeyValue
             rows={[
               ['Bases de datos', `${a.databaseCount} de ${a.maxDatabases}`],
+              ['Tu código', <span className="font-mono">{a.code}</span>],
               ['Cuenta creada', formatDate(a.createdAt)],
               ['Entras con', ways.join(', ')],
             ]}
           />
-          <p className="px-5 pb-4 text-[0.85rem] text-ink-2">Cada base de datos expira si nadie se conecta durante un tiempo. Lo ves en el resumen de cada base.</p>
+          <p className="px-5 pb-4 text-[0.85rem] text-ink-2">Tu código va al inicio del nombre de tus bases de datos (<span className="font-mono">{a.code}-tienda</span>), así nadie más puede usar el mismo nombre. Cada base expira si nadie se conecta durante un tiempo; lo ves en su resumen.</p>
         </Panel>
 
         <Panel title="Ayuda">

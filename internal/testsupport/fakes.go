@@ -760,13 +760,16 @@ func (m *FakeMetadata) CreateClientUser(_ context.Context, n model.NewClientUser
 		return model.ClientUser{}, ErrInjected
 	}
 	for _, u := range m.ClientUsers {
-		if u.Username == n.Username || (n.Email != "" && strings.EqualFold(u.Email, n.Email)) || (n.GoogleSub != "" && u.GoogleSub == n.GoogleSub) {
+		if u.Username == n.Username || (n.Email != "" && strings.EqualFold(u.Email, n.Email)) || (n.GoogleSub != "" && u.GoogleSub == n.GoogleSub) || (n.Code != "" && u.Code == n.Code) {
 			return model.ClientUser{}, model.ErrConflict
 		}
 	}
+	if n.Code == "" {
+		n.Code = model.NewClientCode()
+	}
 	m.nextUserID++
 	u := model.ClientUser{ID: m.nextUserID, Username: n.Username, Email: n.Email, FullName: n.FullName,
-		PasswordHash: n.PasswordHash, GoogleSub: n.GoogleSub, CreatedBy: n.CreatedBy, NeedsUsername: n.NeedsUsername}
+		PasswordHash: n.PasswordHash, GoogleSub: n.GoogleSub, CreatedBy: n.CreatedBy, NeedsUsername: n.NeedsUsername, Code: n.Code}
 	if n.EmailVerified {
 		now := time.Now()
 		u.EmailVerifiedAt = &now

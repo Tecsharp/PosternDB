@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/tecsharp/posterndb/internal/auth"
 	"github.com/tecsharp/posterndb/internal/config"
+	"github.com/tecsharp/posterndb/internal/naming"
 	"github.com/tecsharp/posterndb/internal/provision"
 )
 
@@ -55,7 +58,11 @@ func (s *server) createMyDatabase(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	req := provision.CreateRequest{Name: body.Name, TemplateID: body.TemplateID}
+	slug, ok := s.clientSlug(w, r, body.Name)
+	if !ok {
+		return
+	}
+	req := provision.CreateRequest{Name: slug, TemplateID: body.TemplateID}
 	if req.TemplateID != 0 && !s.isSharedTemplate(w, r, req.TemplateID) {
 		return
 	}
@@ -66,6 +73,27 @@ func (s *server) createMyDatabase(w http.ResponseWriter, r *http.Request) {
 	req.ClientUserID = &id
 	creds, err := s.Databases.Create(r.Context(), req, actor(r))
 	s.secret(w, http.StatusCreated, "create my database", creds, err)
+}
+
+// clientSlug builds the slug of a registered user's database from the name
+// they typed: their personal code first (abcd12-tienda). Two people can then
+// use the same name, and names are not guessable from the public DNS.
+func (s *server) clientSlug(w http.ResponseWriter, r *http.Request, typed string) (string, bool) {
+	u, ok, err := s.Clients.ByID(r.Context(), clientID(r))
+	if err != nil || !ok {
+		s.domainError(w, "client code", orNotFound(err))
+		return "", false
+	}
+	name := strings.ToLower(strings.TrimSpace(typed))
+	if room := naming.MaxSlugLength - len(u.Code) - 1; len(name) > room {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("el nombre puede tener hasta %d caracteres (tu código %s ocupa %d)", room, u.Code, len(u.Code)+1))
+		return "", false
+	}
+	if err := naming.ValidateSlug(name); err != nil {
+		s.domainError(w, "client slug", &provision.InvalidInputError{Err: err})
+		return "", false
+	}
+	return u.Code + "-" + name, true
 }
 
 // hasRoomForDatabase enforces MAX_DATABASES_PER_CLIENT.

@@ -43,10 +43,19 @@ export const USER_PATTERN = /^[a-z][a-z0-9]{1,15}$/
 export const SLUG_MIN = 3
 export const SLUG_MAX = 40
 
-export function slugProblem(name: string): string {
+/** How many characters a registered user can type: their code and a dash take the rest. */
+export const nameRoom = (code: string) => SLUG_MAX - code.length - 1
+
+export function slugProblem(name: string, max = SLUG_MAX): string {
   if (name.length === 0) return ''
   if (name.length < SLUG_MIN) return `Usa al menos ${SLUG_MIN} caracteres.`
-  if (name.length > SLUG_MAX) return `Usa como máximo ${SLUG_MAX} caracteres.`
+  if (name.length > max) return `Usa como máximo ${max} caracteres.`
   if (!SLUG_PATTERN.test(name)) return 'Empieza con una letra; usa solo a-z, 0-9 y guiones sueltos.'
   return ''
+}
+
+/** Full name and public address of a registered user's database before creating it. */
+export function databasePreview(a: { code: string; hostPrefix: string; baseDomain: string; localMode: boolean }, name: string) {
+  const slug = `${a.code}-${name}`
+  return { slug, address: a.localMode ? '' : `${a.hostPrefix}${slug}.${a.baseDomain}` }
 }

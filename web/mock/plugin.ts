@@ -133,6 +133,7 @@ type ClientRow = {
   googleLinked: boolean
   hasPassword: boolean
   needsUsername?: boolean
+  code: string
   neverExpires: boolean
   maxIdleDays?: number
   createdAt: string
@@ -141,8 +142,13 @@ type ClientRow = {
   databaseCount: number
   lastLoginAt?: string
 }
-let clients: ClientRow[] = [{ id: 1, username: 'ana@ejemplo.com', email: 'ana@ejemplo.com', fullName: 'Ana López', googleLinked: false, hasPassword: true, neverExpires: false, createdAt: iso(-20), createdBy: '', updatedAt: iso(-20), databaseCount: 1, lastLoginAt: iso(-0.5) }]
+let clients: ClientRow[] = [{ id: 1, username: 'ana@ejemplo.com', email: 'ana@ejemplo.com', fullName: 'Ana López', code: 'k7x9qa', googleLinked: false, hasPassword: true, neverExpires: false, createdAt: iso(-20), createdBy: '', updatedAt: iso(-20), databaseCount: 1, lastLoginAt: iso(-0.5) }]
 let nextClientId = 2
+const newCode = () => {
+  const letters = 'abcdefghijklmnopqrstuvwxyz'
+  const all = letters + '0123456789'
+  return letters[Math.floor(Math.random() * 26)] + Array.from({ length: 5 }, () => all[Math.floor(Math.random() * 36)]).join('')
+}
 
 let myBackups = [
   { id: 101, kind: 'dump', status: 'done', slug: 'ana-tienda', file: 'pdb_ana_tienda_20261101.dump', bytes: 48_128, reason: 'manual', requestedBy: 'ana@ejemplo.com', createdAt: iso(-1) },
@@ -208,7 +214,7 @@ export function mockApi(): Plugin {
           // Stand-in for Google: signs in a Google-only account and goes back to the panel.
           let g = clients.find((c) => c.email === 'laura@gmail.com')
           if (!g) {
-            g = { id: nextClientId++, username: 'laura@gmail.com', email: 'laura@gmail.com', fullName: 'Laura Gómez', googleLinked: true, hasPassword: false, needsUsername: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
+            g = { id: nextClientId++, username: 'laura@gmail.com', email: 'laura@gmail.com', fullName: 'Laura Gómez', code: newCode(), googleLinked: true, hasPassword: false, needsUsername: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
             clients = [...clients, g]
           }
           loggedIn = true
@@ -227,7 +233,7 @@ export function mockApi(): Plugin {
           if (password.length < 12) return send(res, 400, { error: 'la contraseña debe tener al menos 12 caracteres' })
           const mail = String(email).trim().toLowerCase()
           if (clients.some((c) => c.email === mail)) return send(res, 409, { error: 'ya existe una cuenta con ese correo: entra con tu contraseña o con Google' })
-          const c: ClientRow = { id: nextClientId++, username: mail, email: mail, fullName: String(fullName).trim(), googleLinked: false, hasPassword: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
+          const c: ClientRow = { id: nextClientId++, username: mail, email: mail, fullName: String(fullName).trim(), code: newCode(), googleLinked: false, hasPassword: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
           clients = [...clients, c]
           loggedIn = true
           currentRole = 'client'
@@ -285,7 +291,7 @@ export function mockApi(): Plugin {
         if (path === '/clients' && m === 'GET') return send(res, 200, { clients })
         if (path === '/clients' && m === 'POST') {
           const { email, fullName } = (await readJSON(req)) as { email: string; fullName: string }
-          const c: ClientRow = { id: nextClientId++, username: String(email).toLowerCase(), email: String(email).toLowerCase(), fullName: String(fullName), googleLinked: false, hasPassword: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: 'admin', updatedAt: new Date().toISOString(), databaseCount: 0 }
+          const c: ClientRow = { id: nextClientId++, username: String(email).toLowerCase(), email: String(email).toLowerCase(), fullName: String(fullName), code: newCode(), googleLinked: false, hasPassword: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: 'admin', updatedAt: new Date().toISOString(), databaseCount: 0 }
           clients = [...clients, c]
           return send(res, 201, { client: c, password: 'Zx81PqLm0vRt5Kd2Wn7Y' })
         }
@@ -326,7 +332,7 @@ export function mockApi(): Plugin {
             }
           }
           const count = databases.filter((d) => d.clientUserId === c.id).length
-          return send(res, 200, { username: c.username, email: c.email ?? '', fullName: c.fullName ?? '', googleLinked: c.googleLinked, hasPassword: c.hasPassword, needsUsername: c.needsUsername ?? false, createdAt: c.createdAt, maxDatabases: settings.maxDatabasesPerClient, databaseCount: count })
+          return send(res, 200, { username: c.username, email: c.email ?? '', fullName: c.fullName ?? '', googleLinked: c.googleLinked, hasPassword: c.hasPassword, needsUsername: c.needsUsername ?? false, createdAt: c.createdAt, maxDatabases: settings.maxDatabasesPerClient, databaseCount: count, code: c.code, hostPrefix: settings.clientHostPrefix, baseDomain: settings.baseDomain, localMode: false })
         }
         if (path === '/me/google/link') {
           const c = clients.find((x) => x.id === currentClientId)
@@ -348,7 +354,8 @@ export function mockApi(): Plugin {
           }
           if (parts[3] === 'restore') {
             const { name } = await readJSON(req)
-            const row = mk(nextId++, String(name), 0, 0, 'activa', { clientUserId: currentClientId })
+            const owner = clients.find((x) => x.id === currentClientId)
+            const row = mk(nextId++, `${owner?.code}-${String(name).trim().toLowerCase()}`, 0, 0, 'activa', { clientUserId: currentClientId })
             databases = [row, ...databases]
             return send(res, 201, creds(row))
           }
@@ -362,8 +369,14 @@ export function mockApi(): Plugin {
           if (!parts[2] && m === 'GET') return send(res, 200, { databases: mine() })
           if (!parts[2] && m === 'POST') {
             const { name } = await readJSON(req)
-            if (databases.some((d) => d.slug === name)) return send(res, 409, { error: 'ya existe un elemento con ese nombre' })
-            const row = mk(nextId++, String(name), 0, 0, 'activa', { clientUserId: currentClientId })
+            const owner = clients.find((x) => x.id === currentClientId)
+            const typed = String(name).trim().toLowerCase()
+            const room = 40 - (owner?.code.length ?? 6) - 1
+            if (typed.length > room) return send(res, 400, { error: `el nombre puede tener hasta ${room} caracteres (tu código ${owner?.code} ocupa ${(owner?.code.length ?? 6) + 1})` })
+            if (!/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(typed) || typed.length < 3) return send(res, 400, { error: 'el nombre debe tener entre 3 y 40 caracteres, empezar con una letra y usar solo a-z, 0-9 y guiones sueltos' })
+            const slug = `${owner?.code}-${typed}`
+            if (databases.some((d) => d.slug === slug)) return send(res, 409, { error: 'ya existe un elemento con ese nombre' })
+            const row = mk(nextId++, slug, 0, 0, 'activa', { clientUserId: currentClientId })
             databases = [row, ...databases]
             return send(res, 201, creds(row))
           }

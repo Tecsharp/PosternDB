@@ -22,6 +22,12 @@ type accountView struct {
 	CreatedAt     time.Time `json:"createdAt"`
 	MaxDatabases  int       `json:"maxDatabases"`
 	DatabaseCount int       `json:"databaseCount"`
+	// Code leads the name of the user's databases; HostPrefix and BaseDomain
+	// let the panel preview the public address before creating one.
+	Code       string `json:"code"`
+	HostPrefix string `json:"hostPrefix"`
+	BaseDomain string `json:"baseDomain"`
+	LocalMode  bool   `json:"localMode"`
 }
 
 func (s *server) accountOf(u model.ClientUser, count int) accountView {
@@ -29,6 +35,7 @@ func (s *server) accountOf(u model.ClientUser, count int) accountView {
 		Username: u.Username, Email: u.Email, FullName: u.FullName, GoogleLinked: u.GoogleLinked,
 		HasPassword: u.HasPassword, NeedsUsername: u.NeedsUsername, CreatedAt: u.CreatedAt,
 		MaxDatabases: s.Settings.MaxDatabasesPerClient, DatabaseCount: count,
+		Code: u.Code, HostPrefix: s.Settings.ClientHostPrefix, BaseDomain: s.Settings.BaseDomain, LocalMode: s.Settings.LocalMode,
 	}
 }
 
@@ -183,8 +190,12 @@ func (s *server) restoreMyBackup(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRoomForDatabase(w, r) {
 		return
 	}
+	slug, ok := s.clientSlug(w, r, req.Name)
+	if !ok {
+		return
+	}
 	id := clientID(r)
-	creds, err := s.Databases.Create(r.Context(), provision.CreateRequest{Name: req.Name, RestoreBackupID: job.ID, ClientUserID: &id}, actor(r))
+	creds, err := s.Databases.Create(r.Context(), provision.CreateRequest{Name: slug, RestoreBackupID: job.ID, ClientUserID: &id}, actor(r))
 	s.secret(w, http.StatusCreated, "restore my backup", creds, err)
 }
 

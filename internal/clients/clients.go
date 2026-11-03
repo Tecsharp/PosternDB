@@ -164,7 +164,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (model.ClientU
 	if err != nil {
 		return model.ClientUser{}, err
 	}
-	u, err := s.store.CreateClientUser(ctx, model.NewClientUser{
+	u, err := s.createUser(ctx, model.NewClientUser{
 		Username: email, Email: email, FullName: name, PasswordHash: hash, EmailUseAccepted: true,
 	})
 	if err != nil {
@@ -193,12 +193,33 @@ func (s *Service) Create(ctx context.Context, email, fullName, actor string) (mo
 	if err != nil {
 		return model.ClientUser{}, "", err
 	}
-	u, err := s.store.CreateClientUser(ctx, model.NewClientUser{Username: clean, Email: clean, FullName: name, PasswordHash: hash, CreatedBy: actor})
+	u, err := s.createUser(ctx, model.NewClientUser{Username: clean, Email: clean, FullName: name, PasswordHash: hash, CreatedBy: actor})
 	if err != nil {
 		return u, "", emailTaken(err)
 	}
 	s.audit(ctx, actor, config.ActionClientCreated, clean, nil)
 	return u, password, nil
+}
+
+const codeAttempts = 5
+
+// createUser inserts the account with a fresh personal code. If the insert
+// conflicts, it checks whether the email is the cause (then it is really
+// taken) and otherwise tries again with another code.
+func (s *Service) createUser(ctx context.Context, n model.NewClientUser) (model.ClientUser, error) {
+	for attempt := 0; attempt < codeAttempts; attempt++ {
+		n.Code = model.NewClientCode()
+		u, err := s.store.CreateClientUser(ctx, n)
+		if !errors.Is(err, model.ErrConflict) {
+			return u, err
+		}
+		if n.Email != "" {
+			if _, lookup := s.store.GetClientUserByEmail(ctx, n.Email); lookup == nil {
+				return u, err
+			}
+		}
+	}
+	return model.ClientUser{}, model.ErrConflict
 }
 
 func emailTaken(err error) error {
@@ -281,7 +302,7 @@ func (s *Service) LoginWithGoogle(ctx context.Context, g oauth.Profile) (model.C
 	if utf8.RuneCountInString(name) < minNameChars {
 		name = strings.SplitN(email, "@", 2)[0]
 	}
-	created, err := s.store.CreateClientUser(ctx, model.NewClientUser{
+	created, err := s.createUser(ctx, model.NewClientUser{
 		Username: email, Email: email, FullName: truncate(name, maxNameChars), GoogleSub: g.Subject,
 		EmailVerified: true, EmailUseAccepted: true, NeedsUsername: true,
 	})

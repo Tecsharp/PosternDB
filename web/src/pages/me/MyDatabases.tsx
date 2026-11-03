@@ -4,7 +4,7 @@ import { me, type Credentials, type Database } from '../../api'
 import { CredentialsSheet } from '../../components/CredentialsSheet'
 import { PageBody, PageHeader } from '../../components/Shell'
 import { Button, CodeBlock, EmptyState, ErrorNote, Loading, Sheet, SheetFooter, SheetHeader, StatusBadge, useAction, useLoad } from '../../components/ui'
-import { formatRelative, normalizeName, slugProblem } from '../../format'
+import { databasePreview, formatRelative, nameRoom, normalizeName, slugProblem } from '../../format'
 import { href, linkHandler, navigate } from '../../router'
 
 /** "Mis bases": the whole reduced panel a self-service client sees. */
@@ -109,9 +109,12 @@ function CreateSheet({
   const [raw, setRaw] = useState('')
   const [templateId, setTemplateId] = useState(0)
   const templates = useLoad(() => (open ? me.templates() : Promise.resolve([])), [open])
+  const account = useLoad(me.account, [])
   const { busy, error, run, setError } = useAction()
   const name = normalizeName(raw)
-  const problem = slugProblem(name)
+  const a = account.data
+  const problem = slugProblem(name, a ? nameRoom(a.code) : undefined)
+  const preview = a && name && !problem ? databasePreview(a, name) : null
 
   function close() {
     setRaw('')
@@ -151,7 +154,23 @@ function CreateSheet({
               onChange={(e) => setRaw(e.target.value)}
             />
             <span id="my-db-help" className={`mt-1.5 block text-[0.85rem] ${problem ? 'text-danger' : 'text-ink-2'}`} aria-live="polite">
-              {problem || ' '}
+              {problem ||
+                (preview ? (
+                  <>
+                    Se creará como <span className="font-mono text-ink">{preview.slug}</span>
+                    {preview.address && (
+                      <>
+                        {' '}en <span className="font-mono text-ink">{preview.address}</span>
+                      </>
+                    )}
+                  </>
+                ) : a ? (
+                  <>
+                    Tu código <span className="font-mono text-ink">{a.code}</span> va al inicio del nombre: así nadie más puede usar el tuyo.
+                  </>
+                ) : (
+                  ' '
+                ))}
             </span>
           </label>
           {templates.data && templates.data.length > 0 && (
@@ -170,7 +189,7 @@ function CreateSheet({
           <Button onClick={close} disabled={busy}>
             Cancelar
           </Button>
-          <Button type="submit" variant="primary" disabled={busy || !name || !!problem}>
+          <Button type="submit" variant="primary" disabled={busy || !name || !!problem || !a}>
             {busy ? 'Creando…' : 'Crear base de datos'}
           </Button>
         </SheetFooter>

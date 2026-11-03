@@ -110,7 +110,8 @@ func TestClientLiveConnectionsAreOwnedOnly(t *testing.T) {
 	rec := e.do(t, http.MethodPost, "/api/me/databases", req{as: "ana@example.com", body: `{"name":"mia"}`})
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 
-	assert.Equal(t, http.StatusOK, e.do(t, http.MethodGet, "/api/me/databases/mia/live-connections", req{as: "ana@example.com"}).Code)
+	mia := e.slugOf(t, "ana@example.com", "mia")
+	assert.Equal(t, http.StatusOK, e.do(t, http.MethodGet, "/api/me/databases/"+mia+"/live-connections", req{as: "ana@example.com"}).Code)
 	assert.Equal(t, http.StatusNotFound, e.do(t, http.MethodGet, "/api/me/databases/ajena/live-connections", req{as: "ana@example.com"}).Code)
 }
 

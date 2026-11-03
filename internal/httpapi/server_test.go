@@ -99,7 +99,7 @@ func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string) env 
 		Audit:     e.meta,
 		Health:    pinger{err: health},
 		Notifier:  e.notifier,
-		Settings:  Settings{BaseDomain: "pachislab.com", ExampleHostname: "postern-cliente1.pachislab.com", ExpirationDays: 30, AllowSelfRegister: true, MaxDatabasesPerClient: 3, AuthMode: mode},
+		Settings:  Settings{BaseDomain: "pachislab.com", ClientHostPrefix: "postern-", ExampleHostname: "postern-cliente1.pachislab.com", ExpirationDays: 30, AllowSelfRegister: true, MaxDatabasesPerClient: 3, AuthMode: mode},
 		Static: fstest.MapFS{
 			"index.html":        {Data: []byte("<html>panel</html>")},
 			"assets/app-abc.js": {Data: []byte("console.log(1)")},

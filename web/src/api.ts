@@ -27,6 +27,11 @@ export interface Account {
   createdAt: string
   maxDatabases: number
   databaseCount: number
+  /** Leads the name of the user's databases (abcd12-tienda). */
+  code: string
+  hostPrefix: string
+  baseDomain: string
+  localMode: boolean
 }
 
 export interface RegisterForm {
@@ -237,6 +242,7 @@ export interface ClientUser {
   updatedBy?: string
   databaseCount?: number
   lastLoginAt?: string
+  code?: string
 }
 
 export interface PlatformSettings {
