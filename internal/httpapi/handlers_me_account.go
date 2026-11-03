@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/tecsharp/posterndb/internal/auth"
 	"github.com/tecsharp/posterndb/internal/config"
 	"github.com/tecsharp/posterndb/internal/model"
 	"github.com/tecsharp/posterndb/internal/provision"
@@ -201,35 +202,97 @@ func (s *server) restoreMyBackup(w http.ResponseWriter, r *http.Request) {
 
 // ---- activity ------------------------------------------------------------------
 
-// myActivity shows what happened to the user's own account and databases.
-// Other people's actions appear without their name or details.
+// ownSlugs lists the slugs of the databases an account owns.
+func (s *server) ownSlugs(r *http.Request, accountID int64) ([]string, error) {
+	dbs, err := s.Databases.ClientDatabases(r.Context(), accountID)
+	if err != nil {
+		return nil, err
+	}
+	slugs := make([]string, 0, len(dbs))
+	for _, d := range dbs {
+		slugs = append(slugs, d.Slug)
+	}
+	return slugs, nil
+}
+
+// activityOf answers with the audit entries about one person, newest first.
+// redact hides the name and details of whoever else acted (a user's own view).
+func (s *server) activityOf(w http.ResponseWriter, r *http.Request, identities, slugs []string, redact bool) {
+	entries, err := s.Audit.ListAudit(r.Context(), config.ClientActivityScan)
+	if err != nil {
+		s.internalError(w, "activity", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": personActivity(entries, identities, slugs, redact)})
+}
+
+// myActivity is the registered user's own feed: what happened to their account
+// and databases. Other people's actions appear without their name or details.
 func (s *server) myActivity(w http.ResponseWriter, r *http.Request) {
 	u, ok, err := s.Clients.ByID(r.Context(), clientID(r))
 	if err != nil || !ok {
 		s.domainError(w, "my activity", orNotFound(err))
 		return
 	}
-	dbs, err := s.Databases.ClientDatabases(r.Context(), u.ID)
+	slugs, err := s.ownSlugs(r, u.ID)
 	if err != nil {
 		s.domainError(w, "my activity", err)
 		return
 	}
-	entries, err := s.Audit.ListAudit(r.Context(), config.ClientActivityScan)
-	if err != nil {
-		s.internalError(w, "my activity", err)
-		return
-	}
-	slugs := make([]string, 0, len(dbs))
-	for _, d := range dbs {
-		slugs = append(slugs, d.Slug)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": clientActivity(entries, []string{u.Username, u.Email}, slugs)})
+	s.activityOf(w, r, []string{u.Username, u.Email}, slugs, true)
 }
 
-// clientActivity keeps the entries that concern a user: their own actions and
-// anything that happened to their account or databases. What others did is
-// shown without their identity, and without details.
+// myStaffActivity is the feed of whoever is signed in to the admin panel: what
+// they did and what happened to their account. For the owner (no account) it is
+// what was done under the ADMIN_USER name.
+func (s *server) myStaffActivity(w http.ResponseWriter, r *http.Request) {
+	id := auth.FromContext(r.Context())
+	if id.ClientUserID == nil {
+		s.activityOf(w, r, []string{id.Username}, nil, false)
+		return
+	}
+	u, ok, err := s.Clients.ByID(r.Context(), *id.ClientUserID)
+	if err != nil || !ok {
+		s.domainError(w, "my activity", orNotFound(err))
+		return
+	}
+	slugs, err := s.ownSlugs(r, u.ID)
+	if err != nil {
+		s.domainError(w, "my activity", err)
+		return
+	}
+	s.activityOf(w, r, []string{u.Username, u.Email}, slugs, false)
+}
+
+// clientActivityFor is the feed of one person, for the administrators who
+// manage them: user or administrator, the same account.
+func (s *server) clientActivityFor(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	u, found, err := s.Clients.ByID(r.Context(), id)
+	if err != nil || !found {
+		s.domainError(w, "client activity", orNotFound(err))
+		return
+	}
+	slugs, err := s.ownSlugs(r, u.ID)
+	if err != nil {
+		s.domainError(w, "client activity", err)
+		return
+	}
+	s.activityOf(w, r, []string{u.Username, u.Email}, slugs, false)
+}
+
+// clientActivity is personActivity as a registered user sees it.
 func clientActivity(entries []model.AuditEntry, identities, slugs []string) []model.AuditEntry {
+	return personActivity(entries, identities, slugs, true)
+}
+
+// personActivity keeps the entries that concern one person: their own actions
+// and anything that happened to their account or databases. With redact, what
+// others did is shown without their identity and without details.
+func personActivity(entries []model.AuditEntry, identities, slugs []string, redact bool) []model.AuditEntry {
 	mine := set(identities)
 	own := set(slugs)
 	out := []model.AuditEntry{}
@@ -238,7 +301,7 @@ func clientActivity(entries []model.AuditEntry, identities, slugs []string) []mo
 		if !self && !mine[e.Target] && !own[e.Target] {
 			continue
 		}
-		if !self {
+		if redact && !self {
 			if e.Actor != config.ActorSystem && e.Actor != config.ActorAuditor {
 				e.Actor = "administrador"
 			}

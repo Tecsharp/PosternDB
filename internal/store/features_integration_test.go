@@ -255,27 +255,9 @@ func TestExpiryColumns(t *testing.T) {
 	assert.Nil(t, got.ExpiryWarnedAt, "activity re-arms the warning")
 }
 
-func TestAdminsUsersJobsTemplatesRepositories(t *testing.T) {
+func TestUsersJobsTemplatesRepositories(t *testing.T) {
 	ctx := context.Background()
 	m := NewMetadata(pool)
-
-	a, err := m.CreateAdmin(ctx, model.Admin{Username: "it-ana", PasswordHash: "h", Role: config.RoleAdmin, CreatedBy: "root"})
-	require.NoError(t, err)
-	_, err = m.CreateAdmin(ctx, model.Admin{Username: "it-ana", PasswordHash: "h", Role: config.RoleAdmin})
-	assert.ErrorIs(t, err, model.ErrConflict)
-	require.NoError(t, m.UpdateAdminRole(ctx, "it-ana", config.RoleViewer))
-	require.NoError(t, m.UpdateAdminPassword(ctx, "it-ana", "h2"))
-	require.NoError(t, m.TouchAdminLogin(ctx, "it-ana", time.Now()))
-	got, err := m.GetAdmin(ctx, "it-ana")
-	require.NoError(t, err)
-	assert.Equal(t, config.RoleViewer, got.Role)
-	assert.Equal(t, "h2", got.PasswordHash)
-	assert.NotNil(t, got.LastLoginAt)
-	list, err := m.ListAdmins(ctx)
-	require.NoError(t, err)
-	assert.NotEmpty(t, list)
-	require.NoError(t, m.DeleteAdmin(ctx, a.Username))
-	assert.ErrorIs(t, m.DeleteAdmin(ctx, a.Username), model.ErrNotFound)
 
 	db, err := m.InsertDatabase(ctx, model.ClientDatabase{Slug: "it-repo", DBName: "pdb_it_repo", RoleName: "pdb_it_repo",
 		Hostname: "it-repo.example.com", LastSeenAt: time.Now()})
@@ -438,4 +420,66 @@ func TestPlatformSettings(t *testing.T) {
 	// Reset for any later test in this package relying on defaults.
 	_, err = m.SetPlatformSettings(ctx, nil, nil, "root")
 	require.NoError(t, err)
+}
+
+// Migration 010 folds the old admins table into client_users: same-username
+// people keep their account (and password) and gain the role; the rest become
+// accounts; a stored "owner" becomes a plain admin.
+func TestMigration010FoldsAdminsIntoAccounts(t *testing.T) {
+	ctx := context.Background()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		_, err := pool.Exec(ctx, q, args...)
+		require.NoError(t, err)
+	}
+	t.Cleanup(func() {
+		exec("DELETE FROM client_users WHERE username LIKE 'mig010-%'")
+		exec("DROP TABLE IF EXISTS admins")
+	})
+
+	exec("DROP TABLE IF EXISTS admins")
+	exec("DROP TABLE IF EXISTS admins_migrated")
+	exec(`CREATE TABLE admins (id BIGSERIAL PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+		role TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), created_by TEXT NOT NULL DEFAULT '', last_login_at TIMESTAMPTZ)`)
+	exec("INSERT INTO admins (username, password_hash, role) VALUES ('mig010-same','admin-hash','admin'), ('mig010-view','view-hash','viewer'), ('mig010-boss','boss-hash','owner'), ('mig010-gone','gone-hash','admin')")
+	exec("INSERT INTO client_users (username, password_hash, code) VALUES ('mig010-same','user-hash','zzzzz1'), ('mig010-gone', NULL, 'zzzzz2')")
+	exec("DELETE FROM schema_migrations WHERE version = 'migrations/010_user_roles.sql'")
+
+	require.NoError(t, Migrate(ctx, pool))
+
+	got := map[string][2]string{}
+	rows, err := pool.Query(ctx, "SELECT username, role, COALESCE(password_hash,'') FROM client_users WHERE username LIKE 'mig010-%'")
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var u, r, h string
+		require.NoError(t, rows.Scan(&u, &r, &h))
+		got[u] = [2]string{r, h}
+	}
+	assert.Equal(t, map[string][2]string{
+		"mig010-same": {"admin", "user-hash"},  // same person: keeps their own password
+		"mig010-view": {"viewer", "view-hash"}, // no account yet: created
+		"mig010-boss": {"admin", "boss-hash"},  // a stored owner is an admin; the owner lives in .env
+		"mig010-gone": {"admin", "gone-hash"},  // Google-only account gets a usable password
+	}, got)
+	var moved bool
+	require.NoError(t, pool.QueryRow(ctx, "SELECT to_regclass('admins_migrated') IS NOT NULL AND to_regclass('admins') IS NULL").Scan(&moved))
+	assert.True(t, moved, "the old table is kept under another name")
+}
+
+func TestSetClientRole(t *testing.T) {
+	ctx := context.Background()
+	m := NewMetadata(pool)
+	u, err := m.CreateClientUser(ctx, model.NewClientUser{Username: "role-it", PasswordHash: "h"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.DeleteClientUser(ctx, u.ID) })
+	assert.Equal(t, "user", u.Role, "new accounts are plain users")
+
+	got, err := m.SetClientRole(ctx, u.ID, "admin")
+	require.NoError(t, err)
+	assert.Equal(t, "admin", got.Role)
+	_, err = m.SetClientRole(ctx, u.ID, "owner")
+	assert.Error(t, err, "the database refuses a role it does not know")
+	_, err = m.SetClientRole(ctx, 987654321, "admin")
+	assert.ErrorIs(t, err, model.ErrNotFound)
 }

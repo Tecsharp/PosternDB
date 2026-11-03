@@ -181,7 +181,7 @@ func (s *server) googleCallback(w http.ResponseWriter, r *http.Request) {
 		redirectOAuth(w, r, modeLogin, s.googleFailure(err))
 		return
 	}
-	token, exp, err := s.Auth.IssueFor(auth.ClientIdentity(u).Subject(), s.Auth.SessionTTL(st.remember))
+	token, exp, err := s.Auth.IssueFor(auth.AccountIdentity(u).Subject(), s.Auth.SessionTTL(st.remember))
 	if err != nil {
 		s.Logger.Error("issue session", "error", err)
 		redirectOAuth(w, r, modeLogin, oauthFailed)

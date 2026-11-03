@@ -106,11 +106,6 @@ let templates = [
   { id: 3, name: 'Tienda en línea', description: 'Productos, clientes y pedidos con sus líneas.', sql: 'CREATE TABLE productos (...);\nCREATE TABLE clientes (...);\nCREATE TABLE pedidos (...);', shared: true, updatedAt: iso(-3) },
   { id: 4, name: 'Esquema interno', description: 'Solo para administradores.', sql: 'CREATE TABLE interna (id int);', shared: false, updatedAt: iso(-3) },
 ]
-let admins = [
-  { id: 0, username: 'admin', role: 'owner', createdAt: iso(-30), createdBy: '.env', bootstrap: true },
-  { id: 1, username: 'ana', role: 'admin', createdAt: iso(-10), createdBy: 'admin', lastLoginAt: iso(-0.2), bootstrap: false },
-  { id: 2, username: 'bi-lector', role: 'viewer', createdAt: iso(-4), createdBy: 'admin', bootstrap: false },
-]
 const audit = [
   { id: 7, occurredAt: iso(-0.01), actor: 'admin', action: 'query_executed', target: 'taller-motos', details: { sql: 'SELECT count(*) FROM miembros' } },
   { id: 6, occurredAt: iso(-0.05), actor: 'inactivity-auditor', action: 'inactivity_audit_run', target: '', details: { checked: 4, activeSeen: 3, expired: 0 } },
@@ -126,6 +121,7 @@ let globalExpiry: { expirationDays: number | null; expiringSoonDays: number | nu
   expirationDays: null, expiringSoonDays: null, updatedAt: new Date().toISOString(),
 }
 type ClientRow = {
+  role: 'user' | 'viewer' | 'admin'
   id: number
   username: string
   email?: string
@@ -142,8 +138,13 @@ type ClientRow = {
   databaseCount: number
   lastLoginAt?: string
 }
-let clients: ClientRow[] = [{ id: 1, username: 'ana@ejemplo.com', email: 'ana@ejemplo.com', fullName: 'Ana López', code: 'k7x9qa', googleLinked: false, hasPassword: true, neverExpires: false, createdAt: iso(-20), createdBy: '', updatedAt: iso(-20), databaseCount: 1, lastLoginAt: iso(-0.5) }]
-let nextClientId = 2
+let clients: ClientRow[] = [{ id: 1, role: 'user', username: 'ana@ejemplo.com', email: 'ana@ejemplo.com', fullName: 'Ana López', code: 'k7x9qa', googleLinked: false, hasPassword: true, neverExpires: false, createdAt: iso(-20), createdBy: '', updatedAt: iso(-20), databaseCount: 1, lastLoginAt: iso(-0.5) }]
+clients.push(
+  { id: 2, role: 'admin', username: 'bruno@ejemplo.com', email: 'bruno@ejemplo.com', fullName: 'Bruno Díaz', code: 'm2c8dz', googleLinked: true, hasPassword: true, neverExpires: false, createdAt: iso(-10), createdBy: 'admin', updatedAt: iso(-3), databaseCount: 0, lastLoginAt: iso(-0.2) },
+  { id: 3, role: 'viewer', username: 'carla@ejemplo.com', email: 'carla@ejemplo.com', fullName: 'Carla Ruiz', code: 'p4t7wq', googleLinked: false, hasPassword: true, neverExpires: false, createdAt: iso(-4), createdBy: 'admin', updatedAt: iso(-4), databaseCount: 0 },
+  { id: 4, role: 'user', username: 'luis@ejemplo.com', email: 'luis@ejemplo.com', fullName: 'Luis Ortega', code: 'h9b3nx', googleLinked: false, hasPassword: true, neverExpires: false, createdAt: iso(-6), createdBy: '', updatedAt: iso(-6), databaseCount: 2 },
+)
+let nextClientId = 5
 const newCode = () => {
   const letters = 'abcdefghijklmnopqrstuvwxyz'
   const all = letters + '0123456789'
@@ -214,7 +215,7 @@ export function mockApi(): Plugin {
           // Stand-in for Google: signs in a Google-only account and goes back to the panel.
           let g = clients.find((c) => c.email === 'laura@gmail.com')
           if (!g) {
-            g = { id: nextClientId++, username: 'laura@gmail.com', email: 'laura@gmail.com', fullName: 'Laura Gómez', code: newCode(), googleLinked: true, hasPassword: false, needsUsername: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
+            g = { id: nextClientId++, role: 'user', username: 'laura@gmail.com', email: 'laura@gmail.com', fullName: 'Laura Gómez', code: newCode(), googleLinked: true, hasPassword: false, needsUsername: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
             clients = [...clients, g]
           }
           loggedIn = true
@@ -233,7 +234,7 @@ export function mockApi(): Plugin {
           if (password.length < 12) return send(res, 400, { error: 'la contraseña debe tener al menos 12 caracteres' })
           const mail = String(email).trim().toLowerCase()
           if (clients.some((c) => c.email === mail)) return send(res, 409, { error: 'ya existe una cuenta con ese correo: entra con tu contraseña o con Google' })
-          const c: ClientRow = { id: nextClientId++, username: mail, email: mail, fullName: String(fullName).trim(), code: newCode(), googleLinked: false, hasPassword: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
+          const c: ClientRow = { id: nextClientId++, role: 'user', username: mail, email: mail, fullName: String(fullName).trim(), code: newCode(), googleLinked: false, hasPassword: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
           clients = [...clients, c]
           loggedIn = true
           currentRole = 'client'
@@ -265,6 +266,18 @@ export function mockApi(): Plugin {
           return send(res, 200, globalExpiry)
         }
         if (path === '/audit') return send(res, 200, { entries: audit })
+        if (path === '/activity/me') return send(res, 200, { entries: audit.filter((e) => e.actor === 'admin') })
+        if (parts[0] === 'clients' && parts[2] === 'activity') {
+          const c = clients.find((x) => x.id === Number(parts[1]))
+          if (!c) return send(res, 404, { error: 'no encontrado' })
+          return send(res, 200, { entries: audit.filter((e) => e.actor === c.username || e.target === c.username).concat(myActivity as never[]) })
+        }
+        if (parts[0] === 'clients' && parts[2] === 'role' && m === 'PUT') {
+          const { role } = (await readJSON(req)) as { role: ClientRow['role'] }
+          if (!['user', 'viewer', 'admin'].includes(role)) return send(res, 400, { error: 'rol no válido' })
+          clients = clients.map((c) => (c.id === Number(parts[1]) ? { ...c, role } : c))
+          return send(res, 200, clients.find((c) => c.id === Number(parts[1])))
+        }
         if (path === '/notifications/test') return send(res, 204)
         if (path === '/backups' && m === 'GET') return send(res, 200, { backups: jobs.filter((j) => j.status === 'done') })
         if (parts[0] === 'backups' && parts[2] === 'restore') {
@@ -291,7 +304,7 @@ export function mockApi(): Plugin {
         if (path === '/clients' && m === 'GET') return send(res, 200, { clients })
         if (path === '/clients' && m === 'POST') {
           const { email, fullName } = (await readJSON(req)) as { email: string; fullName: string }
-          const c: ClientRow = { id: nextClientId++, username: String(email).toLowerCase(), email: String(email).toLowerCase(), fullName: String(fullName), code: newCode(), googleLinked: false, hasPassword: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: 'admin', updatedAt: new Date().toISOString(), databaseCount: 0 }
+          const c: ClientRow = { id: nextClientId++, role: 'user', username: String(email).toLowerCase(), email: String(email).toLowerCase(), fullName: String(fullName), code: newCode(), googleLinked: false, hasPassword: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: 'admin', updatedAt: new Date().toISOString(), databaseCount: 0 }
           clients = [...clients, c]
           return send(res, 201, { client: c, password: 'Zx81PqLm0vRt5Kd2Wn7Y' })
         }
@@ -423,22 +436,7 @@ export function mockApi(): Plugin {
           }
           if (sub === 'tables' && parts[6] === 'count') return send(res, 200, { rows: 349 })
         }
-        if (path === '/admins' && m === 'GET') return send(res, 200, { admins })
-        if (path === '/admins' && m === 'POST') {
-          const { username, role } = await readJSON(req)
-          const a = { id: nextId++, username: String(username), role: String(role), createdAt: new Date().toISOString(), createdBy: 'admin', bootstrap: false }
-          admins = [...admins, a]
-          return send(res, 201, { admin: a, password: 'Zx81PqLm0vRt5Kd2Wn7Y' })
-        }
-        if (parts[0] === 'admins') {
-          if (parts[2] === 'password') return send(res, 200, { password: 'Nw4Hq8Tz2Lp6Vb1Xc9Rm' })
-          if (m === 'DELETE') admins = admins.filter((a) => a.username !== parts[1])
-          if (m === 'PATCH') {
-            const { role } = await readJSON(req)
-            admins = admins.map((a) => (a.username === parts[1] ? { ...a, role: String(role) } : a))
-          }
-          return send(res, 204)
-        }
+        if (path === '/admins' && m === 'GET') return send(res, 200, { owner: { username: 'admin' }, admins: clients.filter((c) => c.role !== 'user') })
         if (path === '/databases' && m === 'GET') return send(res, 200, { databases })
         if (path === '/databases' && m === 'POST') {
           const { name } = await readJSON(req)

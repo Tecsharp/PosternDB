@@ -16,7 +16,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/tecsharp/posterndb/internal/admins"
 	"github.com/tecsharp/posterndb/internal/auth"
 	"github.com/tecsharp/posterndb/internal/clients"
 	"github.com/tecsharp/posterndb/internal/config"
@@ -69,16 +68,6 @@ type Databases interface {
 	RecordAudit(ctx context.Context, actor, action, target string, details map[string]any)
 }
 
-// Admins manages panel administrators.
-type Admins interface {
-	List(ctx context.Context) ([]model.Admin, error)
-	Create(ctx context.Context, username, role, actor string) (model.Admin, string, error)
-	SetRole(ctx context.Context, username, role, actor string) error
-	ResetPassword(ctx context.Context, username, actor string) (string, error)
-	ChangeOwnPassword(ctx context.Context, username, current, next string) error
-	Delete(ctx context.Context, username, actor string) error
-}
-
 // Clients manages self-service tenants (model.ClientUser): their account
 // lifecycle (register/create/delete/password). Listing and the owner's
 // expiry exception live on Databases (provision.Service), which already
@@ -88,6 +77,8 @@ type Clients interface {
 	Create(ctx context.Context, email, fullName, actor string) (model.ClientUser, string, error)
 	LoginWithGoogle(ctx context.Context, g oauth.Profile) (model.ClientUser, error)
 	LinkGoogle(ctx context.Context, id int64, g oauth.Profile) (model.ClientUser, error)
+	Staff(ctx context.Context) ([]model.ClientUser, error)
+	SetRole(ctx context.Context, id int64, role string, actorID int64, actor string) (model.ClientUser, error)
 	SetUsername(ctx context.Context, id int64, username string) (model.ClientUser, error)
 	SetFullName(ctx context.Context, id int64, fullName string) (model.ClientUser, error)
 	ByID(ctx context.Context, id int64) (model.ClientUser, bool, error)
@@ -146,7 +137,6 @@ type Deps struct {
 	Auth      *auth.Authenticator
 	Limiter   *auth.RateLimiter
 	Databases Databases
-	Admins    Admins
 	Clients   Clients
 	Google    GoogleAuth
 	Audit     AuditReader
@@ -183,6 +173,7 @@ func NewRouter(d Deps) http.Handler {
 			s.viewerRoutes(p.With(auth.RequireRole(config.RoleViewer)))
 			s.adminRoutes(p.With(auth.RequireRole(config.RoleAdmin)))
 			s.ownerRoutes(p.With(auth.RequireRole(config.RoleOwner)))
+			s.accountRoutes(p.With(auth.RequireAccount))
 			s.clientRoutes(p.With(auth.RequireClient))
 		})
 	})
@@ -206,6 +197,8 @@ func (s *server) viewerRoutes(r chi.Router) {
 	r.Get(config.RouteBackups, s.listBackups)
 	r.Get(config.RouteTemplates, s.listTemplates)
 	r.Get(config.RouteAuditLog, s.listAudit)
+	// What the signed-in person did, and what happened to their account.
+	r.Get(config.RouteActivityMe, s.myStaffActivity)
 }
 
 func (s *server) adminRoutes(r chi.Router) {
@@ -229,27 +222,35 @@ func (s *server) adminRoutes(r chi.Router) {
 	r.Put(config.RouteTemplate, s.updateTemplate)
 	r.Delete(config.RouteTemplate, s.deleteTemplate)
 	r.Post(config.RouteNotifyTest, s.testNotification)
+	// People: administrators manage users and give roles. The owner (from
+	// .env) is not an account, so none of this can reach it.
+	r.Get(config.RouteAdmins, s.listAdmins)
+	r.Get(config.RouteClients, s.listClients)
+	r.Post(config.RouteClients, s.createClient)
+	r.Delete(config.RouteClient, s.deleteClient)
+	r.Post(config.RouteClientPassword, s.resetClientPassword)
+	r.Put(config.RouteClientRole, s.setClientRole)
+	r.Get(config.RouteClientActivity, s.clientActivityFor)
 }
 
 func (s *server) ownerRoutes(r chi.Router) {
-	r.Get(config.RouteAdmins, s.listAdmins)
-	r.Post(config.RouteAdmins, s.createAdmin)
-	r.Patch(config.RouteAdmin, s.updateAdmin)
-	r.Post(config.RouteAdminPass, s.resetAdminPassword)
-	r.Delete(config.RouteAdmin, s.deleteAdmin)
 	// Inactivity policy: only the operator running docker compose (the
-	// panel owner) sets the global default and per-database exceptions.
+	// panel owner) sets the global default and the exceptions per database
+	// and per user.
 	r.Put(config.RouteExpiry, s.setExpiry)
 	r.Post(config.RouteExtend, s.extend)
 	r.Get(config.RouteGlobalExpiry, s.getGlobalExpiry)
 	r.Put(config.RouteGlobalExpiry, s.setGlobalExpiry)
-	// Usuarios: self-service tenants. Only the owner adds one directly,
-	// deletes one, or moves its expiry exception.
-	r.Get(config.RouteClients, s.listClients)
-	r.Post(config.RouteClients, s.createClient)
-	r.Delete(config.RouteClient, s.deleteClient)
 	r.Put(config.RouteClientExpiry, s.setClientExpiry)
-	r.Post(config.RouteClientPassword, s.resetClientPassword)
+}
+
+// accountRoutes are about the signed-in account itself and work for any role,
+// so an administrator can also set a password or link Google.
+func (s *server) accountRoutes(r chi.Router) {
+	r.Post(config.RouteMyAccountPassword, s.changeOwnPassword)
+	r.Get(config.RouteMyAccount, s.myAccount)
+	r.Patch(config.RouteMyAccount, s.updateMyAccount)
+	r.Get(config.RouteMyGoogleLink, s.googleLink)
 }
 
 // clientRoutes is the reduced "panel de usuario": a self-service client can
@@ -257,7 +258,6 @@ func (s *server) ownerRoutes(r chi.Router) {
 // ownership server-side (see ownDatabase) — slug guessing never reaches
 // another client's data.
 func (s *server) clientRoutes(r chi.Router) {
-	r.Post(config.RouteMyAccountPassword, s.changeOwnClientPassword)
 	r.Get(config.RouteMyDatabases, s.listMyDatabases)
 	r.Post(config.RouteMyDatabases, s.createMyDatabase)
 	r.Get(config.RouteMyDatabase, s.getMyDatabase)
@@ -266,9 +266,6 @@ func (s *server) clientRoutes(r chi.Router) {
 	r.Get(config.RouteMyStats, s.myStats)
 	r.Get(config.RouteMyLiveConnections, s.myLiveConnections)
 	r.Get(config.RouteMyTemplates, s.myTemplates)
-	r.Get(config.RouteMyAccount, s.myAccount)
-	r.Patch(config.RouteMyAccount, s.updateMyAccount)
-	r.Get(config.RouteMyGoogleLink, s.googleLink)
 	r.Get(config.RouteMyActivity, s.myActivity)
 	r.Get(config.RouteMyBackups, s.myBackups)
 	r.Post(config.RouteMyDBBackups, s.createMyBackup)
@@ -395,7 +392,7 @@ func (s *server) domainError(w http.ResponseWriter, op string, err error) {
 	switch {
 	case errors.As(err, &invalidInput):
 		writeError(w, http.StatusBadRequest, invalidInput.Error())
-	case isAdminValidation(err), isClientValidation(err):
+	case isClientValidation(err):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, clients.ErrEmailTaken), errors.Is(err, clients.ErrUsernameTaken):
 		writeError(w, http.StatusConflict, err.Error())
@@ -409,17 +406,7 @@ func (s *server) domainError(w http.ResponseWriter, op string, err error) {
 }
 
 func isClientValidation(err error) bool {
-	for _, e := range []error{clients.ErrEmail, clients.ErrFullName, clients.ErrUsername, clients.ErrEmailUseNotAccepted, clients.ErrWeakPassword, clients.ErrWrongPassword, clients.ErrRegisterDisabled} {
-		if errors.Is(err, e) {
-			return true
-		}
-	}
-	return false
-}
-
-func isAdminValidation(err error) bool {
-	for _, e := range []error{admins.ErrUsername, admins.ErrRole, admins.ErrBootstrap, admins.ErrSelf,
-		admins.ErrWeakPassword, admins.ErrWrongPassword} {
+	for _, e := range []error{clients.ErrEmail, clients.ErrFullName, clients.ErrUsername, clients.ErrRole, clients.ErrSelfRole, clients.ErrEmailUseNotAccepted, clients.ErrWeakPassword, clients.ErrWrongPassword, clients.ErrRegisterDisabled} {
 		if errors.Is(err, e) {
 			return true
 		}

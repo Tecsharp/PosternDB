@@ -56,14 +56,14 @@ PANEL_HOSTNAME=app.posterndb.com
 
 ### Entrar con Google (opcional)
 
-Con esto tus usuarios entran con un clic y, si olvidan su contraseña, la recuperan con Google: sin servidor de correo que configurar. Tú decides con `AUTH_MODE` si usan Google, contraseña o las dos formas. El administrador siempre entra con su usuario y contraseña.
+Con esto tus usuarios entran con un clic y, si olvidan su contraseña, la recuperan con Google: sin servidor de correo que configurar. Tú decides con `AUTH_MODE` si usan Google, contraseña o las dos formas. El propietario (el de `ADMIN_USER`) y los administradores siempre pueden entrar con su contraseña.
 
 1. En [Google Cloud Console](https://console.cloud.google.com) crea un proyecto. Ve a **APIs y servicios → Pantalla de consentimiento de OAuth**, elige *Externo* y llena el nombre y tu correo.
 2. En **Credenciales → Crear credenciales → ID de cliente de OAuth**, elige *Aplicación web*.
 3. En **URI de redireccionamiento autorizados** agrega exactamente `https://app.posterndb.com/api/auth/google/callback` (cambia `app.posterndb.com` por tu `PANEL_HOSTNAME`).
 4. Copia el *ID de cliente* y el *secreto* en `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` del `.env`, pon `AUTH_MODE=both` (o `google`) y ejecuta `./setup.sh`.
 
-Si dejas esos dos vacíos, el botón no aparece y todo sigue funcionando con correo y contraseña. Google solo sirve para usuarios: nunca abre el panel de administración.
+Si dejas esos dos vacíos, el botón no aparece y todo sigue funcionando con correo y contraseña. El propietario nunca entra con Google. Una cuenta a la que le diste un rol de administrador sí puede abrir el panel de administración con Google, porque es la misma cuenta.
 
 Una cuenta que ya existe con contraseña **no** se abre con Google solo por tener el mismo correo: su dueño la vincula desde *Seguridad*. Así nadie entra a una cuenta ajena.
 
@@ -86,11 +86,14 @@ Otras opciones útiles del `.env`:
 Entra a tu panel con el usuario y contraseña que mostró el setup (también están en `.env`).
 
 - **Bases de datos**: crea, mira y borra bases; ve sus tablas y **edita los datos en vivo**, ve el esquema como diagrama y las **conexiones activas**.
-- **Usuarios**: las personas que se registraron (nombre y correo). Puedes agregar o quitar usuarios y generarles una contraseña nueva.
+- **Usuarios**: las personas que se registraron (nombre y correo). Puedes agregar o quitar usuarios, generarles una contraseña nueva y ver la actividad de cada uno.
 - **Expiración**: define cuánto tarda una base sin uso en expirar. Se cambia **para todos** o **por usuario** (por ejemplo, "nunca expira" para un amigo). Un usuario puede tener además una excepción en una base concreta.
 - **Plantillas**: bases de ejemplo listas para usar (tareas, blog, tienda, citas, inventario). Marca cuáles ven tus usuarios.
 - **Respaldos**: manuales, descarga y restauración. Antes de borrar una base expirada se guarda una copia.
-- **Administradores**: suma gente de confianza con permisos de propietario, administrador o solo lectura.
+- **Administradores**: administradores y usuarios son la misma cuenta. Escribe el nombre, correo o código de un usuario, elígelo de la lista y dale el rol de *Administrador* (todo, menos tocar al propietario o la expiración) o *Lector* (solo ve). Quitarle el rol lo devuelve a usuario normal. El propietario viene de `.env` y nadie puede cambiarlo ni quitarlo.
+- **Actividad**: tu propia actividad, y la de toda la plataforma en la otra pestaña. En *Usuarios* y *Administradores* puedes ver la actividad de cada persona.
+
+> Si actualizas desde una versión con administradores aparte, se convierten en cuentas con ese rol (un administrador con el mismo nombre de usuario que un usuario pasa a ser esa misma cuenta) y las sesiones de administrador abiertas deben entrar otra vez. La tabla vieja queda guardada como `admins_migrated`.
 
 ## 4. Usar PosternDB (quien se registra)
 

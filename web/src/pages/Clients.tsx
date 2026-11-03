@@ -1,23 +1,27 @@
 import { useState, type FormEvent } from 'react'
 import { UserPlusRoundedIcon } from '@solar-icons/react/linear'
-import { api, can, type ClientUser } from '../api'
+import { api, can, type AccountRole, type ClientUser } from '../api'
 import type { PageProps } from '../App'
 import { PageBody, PageHeader } from '../components/Shell'
 import { Button, ErrorNote, Loading, Notice, SecretField, Sheet, SheetFooter, SheetHeader, Tag, useAction, useLoad } from '../components/ui'
 import { formatRelative } from '../format'
+import { PersonActivitySheet } from './Activity'
+
+export const accountRoleLabel: Record<AccountRole, string> = { user: 'Usuario', viewer: 'Lector', admin: 'Administrador' }
 
 /**
- * Owner-only management of self-service tenants: people who register
- * themselves (or whom the owner adds directly) to use the reduced "panel de
- * usuario" — only their own databases, never the admin panel. The owner can
- * move each one's expiry exception here too; it applies to every database
- * that client owns and has no exception of its own.
+ * Management of accounts, for the owner and administrators: people who
+ * register themselves (or whom an administrator adds) and, among them, those
+ * who also hold an admin role. Only the owner moves each one's expiry
+ * exception here; it applies to every database that account owns and has no
+ * exception of its own.
  */
 export function Clients({ session }: PageProps) {
-  const { data, error, loading, reload } = useLoad(() => (can.manageAdmins(session.role) ? api.clients() : Promise.resolve([])), [session.role])
+  const { data, error, loading, reload } = useLoad(() => (can.manageUsers(session.role) ? api.clients() : Promise.resolve([])), [session.role])
   const [adding, setAdding] = useState(false)
   const [secret, setSecret] = useState<{ user: string; password: string } | null>(null)
   const [removing, setRemoving] = useState<ClientUser | null>(null)
+  const [viewing, setViewing] = useState<ClientUser | null>(null)
   const action = useAction()
 
   async function resetPassword(u: ClientUser) {
@@ -25,11 +29,11 @@ export function Clients({ session }: PageProps) {
     if (r) setSecret({ user: u.email || u.username, password: r.password })
   }
 
-  if (!can.manageAdmins(session.role)) {
+  if (!can.manageUsers(session.role)) {
     return (
       <PageBody>
         <div className="pt-8">
-          <Notice tone="info">Solo un propietario puede gestionar usuarios.</Notice>
+          <Notice tone="info">Solo el propietario y los administradores pueden gestionar usuarios.</Notice>
         </div>
       </PageBody>
     )
@@ -39,7 +43,7 @@ export function Clients({ session }: PageProps) {
     <>
       <PageHeader
         title="Usuarios"
-        subtitle="Cuentas que administran solo sus propias bases de datos, desde el panel reducido."
+        subtitle="Todas las cuentas. Quien no tiene un rol de administrador solo ve sus propias bases, desde el panel reducido."
         actions={
           <Button variant="primary" onClick={() => setAdding(true)}>
             <UserPlusRoundedIcon size={18} aria-hidden />
@@ -56,12 +60,23 @@ export function Clients({ session }: PageProps) {
         <section className="group-box">
           {loading && !data && <Loading label="Cargando…" />}
           <ul className="group-rows">
-            {(data ?? []).map((u) => <ClientRow key={u.id} client={u} onChanged={reload} onRemove={() => setRemoving(u)} onResetPassword={() => resetPassword(u)} />)}
+            {(data ?? []).map((u) => (
+              <ClientRow
+                key={u.id}
+                client={u}
+                expiry={can.manageExpiry(session.role)}
+                onChanged={reload}
+                onActivity={() => setViewing(u)}
+                onRemove={u.username === session.user ? undefined : () => setRemoving(u)}
+                onResetPassword={() => resetPassword(u)}
+              />
+            ))}
             {data && data.length === 0 && <li className="px-5 py-6 text-[0.95rem] text-ink-2">Todavía no hay usuarios registrados.</li>}
           </ul>
         </section>
       </PageBody>
 
+      <PersonActivitySheet person={viewing} onClose={() => setViewing(null)} />
       <AddClientSheet
         open={adding}
         onClose={() => setAdding(false)}
@@ -116,7 +131,22 @@ export function Clients({ session }: PageProps) {
   )
 }
 
-export function ClientRow({ client, onChanged, onRemove, onResetPassword }: { client: ClientUser; onChanged: () => void; onRemove?: () => void; onResetPassword?: () => void }) {
+export function ClientRow({
+  client,
+  expiry = true,
+  onChanged,
+  onActivity,
+  onRemove,
+  onResetPassword,
+}: {
+  client: ClientUser
+  /** Whether the inactivity exception can be edited (owner only). */
+  expiry?: boolean
+  onChanged: () => void
+  onActivity?: () => void
+  onRemove?: () => void
+  onResetPassword?: () => void
+}) {
   const [never, setNever] = useState(client.neverExpires)
   const [custom, setCustom] = useState(client.maxIdleDays !== undefined)
   const [days, setDays] = useState(String(client.maxIdleDays ?? ''))
@@ -134,6 +164,7 @@ export function ClientRow({ client, onChanged, onRemove, onResetPassword }: { cl
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2 text-[0.97rem] font-semibold">
             {client.fullName || client.username}
+            {client.role !== 'user' && <Tag tone="accent">{accountRoleLabel[client.role]}</Tag>}
             {client.googleLinked && <Tag tone="accent">Google</Tag>}
           </p>
           {client.fullName && (
@@ -149,12 +180,14 @@ export function ClientRow({ client, onChanged, onRemove, onResetPassword }: { cl
             {client.lastLoginAt ? `, último acceso ${formatRelative(client.lastLoginAt)}` : ', nunca ha entrado'}
           </p>
         </div>
-        {client.neverExpires || client.maxIdleDays !== undefined ? (
+        {!expiry ? null : client.neverExpires || client.maxIdleDays !== undefined ? (
           <Tag tone="accent">{client.neverExpires ? 'Nunca expira' : `${client.maxIdleDays} días`}</Tag>
         ) : (
           <Tag tone="neutral">Política global</Tag>
         )}
         <form className="flex flex-wrap items-center gap-3" onSubmit={submit}>
+          {expiry && (
+            <>
           <label className="flex items-center gap-1.5 text-[0.85rem]">
             <input type="checkbox" className="accent-[var(--accent)]" checked={never} onChange={(e) => setNever(e.target.checked)} />
             Nunca expira
@@ -177,6 +210,13 @@ export function ClientRow({ client, onChanged, onRemove, onResetPassword }: { cl
           <Button size="sm" type="submit" variant="primary" disabled={save.busy}>
             {save.busy ? 'Guardando…' : 'Guardar'}
           </Button>
+            </>
+          )}
+          {onActivity && (
+            <Button size="sm" variant="ghost" onClick={onActivity}>
+              Actividad
+            </Button>
+          )}
           {onResetPassword && (
             <Button size="sm" variant="ghost" onClick={onResetPassword}>
               Nueva contraseña

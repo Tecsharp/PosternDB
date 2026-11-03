@@ -203,6 +203,7 @@ func TestRegisterRejectsIncompleteForms(t *testing.T) {
 	e := newEnv(t, nil)
 	n := 0
 	ip := func() string { n++; return "203.0.113." + itoa(int64(n)) } // the sign-up form is rate limited per IP
+	before := len(e.meta.ClientUsers)
 	for name, body := range map[string]string{
 		"no consent":     `{"email":"a@example.com","fullName":"Ana López","password":"a-long-enough-password"}`,
 		"bad email":      registerBody("nope", "Ana López"),
@@ -212,7 +213,7 @@ func TestRegisterRejectsIncompleteForms(t *testing.T) {
 	} {
 		assert.Equal(t, http.StatusBadRequest, e.do(t, http.MethodPost, "/api/auth/register", req{body: body, ip: ip()}).Code, name)
 	}
-	assert.Empty(t, e.meta.ClientUsers)
+	assert.Len(t, e.meta.ClientUsers, before, "no rejected form creates an account")
 
 	require.Equal(t, http.StatusCreated, e.do(t, http.MethodPost, "/api/auth/register", req{body: registerBody("a@example.com", "Ana López"), ip: ip()}).Code)
 	assert.Equal(t, http.StatusConflict, e.do(t, http.MethodPost, "/api/auth/register", req{body: registerBody("A@example.com", "Otra Ana"), ip: ip()}).Code)

@@ -91,6 +91,10 @@ const (
 // "panel de usuario" (/api/me/*), never an admin route.
 const RoleClient = "client"
 
+// AccountRoleUser is the stored role of a plain user. Accounts that were given
+// the admin or viewer role store those names instead.
+const AccountRoleUser = "user"
+
 // Access levels for additional database users.
 const (
 	AccessRead  = "read"
@@ -201,6 +205,7 @@ const (
 	ActionClientPasswordReset   = "client_password_reset"
 	ActionClientGoogleLinked    = "client_google_linked"
 	ActionClientUsernameChanged = "client_username_changed"
+	ActionRoleChanged           = "role_changed"
 )
 
 // Audit actor names.
@@ -257,14 +262,15 @@ const (
 	RouteTemplates       = "/templates"
 	RouteTemplate        = "/templates/{id}"
 	RouteAdmins          = "/admins"
-	RouteAdmin           = "/admins/{name}"
-	RouteAdminPass       = "/admins/{name}/password"
 	RouteNotifyTest      = "/notifications/test"
 	RouteGlobalExpiry    = "/settings/expiry"
 	RouteClients         = "/clients"
 	RouteClient          = "/clients/{id}"
 	RouteClientExpiry    = "/clients/{id}/expiry"
 	RouteClientPassword  = "/clients/{id}/password"
+	RouteClientRole      = "/clients/{id}/role"
+	RouteClientActivity  = "/clients/{id}/activity"
+	RouteActivityMe      = "/activity/me"
 	RouteGoogleStart     = "/auth/google/start"
 	RouteGoogleCallback  = "/auth/google/callback"
 	URLParamSlug         = "slug"

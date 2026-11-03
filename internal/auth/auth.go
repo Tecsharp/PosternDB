@@ -2,15 +2,15 @@
 // ADMIN_USER / ADMIN_PASSWORD, JWT sessions in an HttpOnly cookie, CSRF
 // protection and per-IP login rate limiting.
 //
-// Three principal tiers share one login endpoint and one session cookie:
+// Two kinds of principal share one login endpoint and one session cookie:
 //
-//  1. the bootstrap owner (ADMIN_USER / ADMIN_PASSWORD from .env);
-//  2. stored administrators (internal/admins), role owner/admin/viewer —
-//     together these unlock the admin panel (/api/* routes);
-//  3. client users (internal/clients), role "client" — unlocks only the
-//     reduced "panel de usuario" (/api/me/* routes). config.RoleClient is
-//     never part of the admin role hierarchy (see roleRank), so a client
-//     session can never pass RequireRole and reach an admin route.
+//  1. the owner (ADMIN_USER / ADMIN_PASSWORD from .env), who is not an account
+//     and so can never be edited or revoked by anyone;
+//  2. accounts (internal/clients). An account's role decides what it opens:
+//     "user" unlocks only the reduced "panel de usuario" (/api/me/* routes),
+//     while "admin" and "viewer" unlock the admin panel (/api/* routes).
+//     config.RoleClient is never part of the admin role hierarchy (see
+//     roleRank), so a plain user can never pass RequireRole.
 package auth
 
 import (
@@ -47,31 +47,32 @@ type Identity struct {
 
 const clientSubjectPrefix = "client:"
 
-// Subject is what goes into the session token. Clients are namespaced by id
-// so a client can never share a token subject with the bootstrap owner or an
-// administrator that happens to use the same name.
+// Subject is what goes into the session token. Accounts are namespaced by id
+// so one can never share a token subject with the owner, whatever name it picked.
 func (i Identity) Subject() string {
-	if i.Role == config.RoleClient && i.ClientUserID != nil {
+	if i.ClientUserID != nil {
 		return clientSubjectPrefix + strconv.FormatInt(*i.ClientUserID, 10)
 	}
 	return i.Username
 }
 
-// ClientIdentity builds the identity of a client user.
-func ClientIdentity(u model.ClientUser) Identity {
+// AccountIdentity builds the identity of an account: a plain user is a
+// client, and an account with the admin or viewer role is an administrator.
+func AccountIdentity(u model.ClientUser) Identity {
 	id := u.ID
-	return Identity{Username: u.Username, Role: config.RoleClient, ClientUserID: &id}
+	role := config.RoleClient
+	switch u.Role {
+	case config.RoleAdmin:
+		role = config.RoleAdmin
+	case config.RoleViewer:
+		role = config.RoleViewer
+	}
+	return Identity{Username: u.Username, Role: role, ClientUserID: &id}
 }
 
-// AdminStore authenticates administrators stored in the database (the
-// bootstrap owner from .env is handled here, without the store).
-type AdminStore interface {
-	Authenticate(ctx context.Context, username, password string) (role string, ok bool, err error)
-	RoleOf(ctx context.Context, username string) (string, error)
-}
-
-// ClientStore authenticates self-service client users (internal/clients).
-type ClientStore interface {
+// AccountStore authenticates accounts (internal/clients). The owner from .env
+// is handled here, without the store.
+type AccountStore interface {
 	Authenticate(ctx context.Context, username, password string) (model.ClientUser, bool, error)
 	ByID(ctx context.Context, id int64) (model.ClientUser, bool, error)
 }
@@ -84,16 +85,15 @@ type Authenticator struct {
 	secret        []byte
 	ttl           time.Duration
 	now           func() time.Time
-	admins        AdminStore
-	clients       ClientStore
-	// clientPasswords is false when AUTH_MODE=google: registered users then
-	// have no password login at all (administrators still do).
-	clientPasswords bool
+	accounts      AccountStore
+	// userPasswords is false when AUTH_MODE=google: plain users then have no
+	// password login at all (administrators still do).
+	userPasswords bool
 }
 
-// New builds an Authenticator from the configured bootstrap credentials.
-// admins/clients may be nil when that tier is not wired up (tests).
-func New(user, password, secret string, ttl time.Duration, admins AdminStore, clients ClientStore) *Authenticator {
+// New builds an Authenticator from the configured owner credentials.
+// accounts may be nil when no account store is wired up (tests).
+func New(user, password, secret string, ttl time.Duration, accounts AccountStore) *Authenticator {
 	return &Authenticator{
 		bootstrapUser: user,
 		userHash:      sha256.Sum256([]byte(user)),
@@ -101,15 +101,15 @@ func New(user, password, secret string, ttl time.Duration, admins AdminStore, cl
 		secret:        []byte(secret),
 		ttl:           ttl,
 		now:           time.Now,
-		admins:        admins,
-		clients:       clients,
+		accounts:      accounts,
 
-		clientPasswords: true,
+		userPasswords: true,
 	}
 }
 
-// SetClientPasswordLogin turns password login for registered users on or off.
-func (a *Authenticator) SetClientPasswordLogin(enabled bool) { a.clientPasswords = enabled }
+// SetUserPasswordLogin turns password login for plain users on or off.
+// Administrators keep it either way.
+func (a *Authenticator) SetUserPasswordLogin(enabled bool) { a.userPasswords = enabled }
 
 // SessionTTL is how long a new session lasts: the normal lifetime, or the
 // long one when the person asked to be remembered.
@@ -133,39 +133,31 @@ func (a *Authenticator) CheckMAC(data, mac string) bool {
 	return hmac.Equal([]byte(a.MAC(data)), []byte(mac))
 }
 
+// BootstrapUser is the owner's username from .env.
+func (a *Authenticator) BootstrapUser() string { return a.bootstrapUser }
+
 // IsBootstrap reports whether username is the .env owner.
 func (a *Authenticator) IsBootstrap(username string) bool {
 	return username == a.bootstrapUser
 }
 
-// Login checks the bootstrap owner, then stored administrators, then client
-// users — whichever tier has a matching username and password.
+// Login checks the owner, then the accounts: whoever has a matching username
+// (or email) and password.
 func (a *Authenticator) Login(ctx context.Context, username, password string) (Identity, bool, error) {
 	if a.CheckCredentials(username, password) {
 		return Identity{Username: username, Role: config.RoleOwner}, true, nil
 	}
-	if a.IsBootstrap(username) {
+	if a.IsBootstrap(username) || a.accounts == nil {
 		return Identity{}, false, nil
 	}
-	if a.admins != nil {
-		role, ok, err := a.admins.Authenticate(ctx, username, password)
-		if err != nil {
-			return Identity{}, false, err
-		}
-		if ok {
-			return Identity{Username: username, Role: role}, true, nil
-		}
+	u, ok, err := a.accounts.Authenticate(ctx, username, password)
+	if err != nil || !ok {
+		return Identity{}, false, err
 	}
-	if a.clients != nil && a.clientPasswords {
-		u, ok, err := a.clients.Authenticate(ctx, username, password)
-		if err != nil {
-			return Identity{}, false, err
-		}
-		if ok {
-			return ClientIdentity(u), true, nil
-		}
+	if !a.userPasswords && u.Role == config.AccountRoleUser {
+		return Identity{}, false, nil
 	}
-	return Identity{}, false, nil
+	return AccountIdentity(u), true, nil
 }
 
 // CheckCredentials compares in constant time. Hashing first gives both sides
@@ -264,32 +256,29 @@ func (a *Authenticator) identify(r *http.Request) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	// Client subjects are checked first and never fall through to the
-	// owner/admin lookups below, whatever name the client chose.
-	if raw, isClient := strings.CutPrefix(subject, clientSubjectPrefix); isClient {
-		return a.identifyClient(r.Context(), raw)
+	// Account subjects are checked first and never fall through to the owner
+	// lookup below, whatever name the account chose.
+	if raw, isAccount := strings.CutPrefix(subject, clientSubjectPrefix); isAccount {
+		return a.identifyAccount(r.Context(), raw)
 	}
 	if a.IsBootstrap(subject) {
 		return Identity{Username: subject, Role: config.RoleOwner}, nil
 	}
-	if a.admins != nil {
-		if role, err := a.admins.RoleOf(r.Context(), subject); err == nil {
-			return Identity{Username: subject, Role: role}, nil
-		}
-	}
 	return Identity{}, ErrInvalidSession
 }
 
-func (a *Authenticator) identifyClient(ctx context.Context, raw string) (Identity, error) {
+// identifyAccount re-reads the account on every request, so a role change or a
+// deletion takes effect immediately.
+func (a *Authenticator) identifyAccount(ctx context.Context, raw string) (Identity, error) {
 	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || a.clients == nil {
+	if err != nil || a.accounts == nil {
 		return Identity{}, ErrInvalidSession
 	}
-	u, ok, err := a.clients.ByID(ctx, id)
+	u, ok, err := a.accounts.ByID(ctx, id)
 	if err != nil || !ok {
 		return Identity{}, ErrInvalidSession
 	}
-	return ClientIdentity(u), nil
+	return AccountIdentity(u), nil
 }
 
 // FromContext returns the identity stored by Middleware.
@@ -323,6 +312,19 @@ func RequireRole(min string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// RequireAccount answers 403 unless the identity is an account (not the owner
+// from .env), whatever its role. For routes about the account itself: its
+// password, username and linked Google.
+func RequireAccount(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if FromContext(r.Context()).ClientUserID == nil {
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // RequireClient answers 403 unless the identity is a client user. It is an

@@ -109,7 +109,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	require.NoError(t, Migrate(context.Background(), pool))
 	var n int
 	require.NoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&n))
-	assert.Equal(t, 9, n)
+	assert.Equal(t, 10, n)
 	var templates int
 	require.NoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM templates").Scan(&templates))
 	assert.Equal(t, 6, templates, "sample templates seeded once, not duplicated by re-running migrations")

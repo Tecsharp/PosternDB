@@ -115,17 +115,18 @@ func TestClientLiveConnectionsAreOwnedOnly(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, e.do(t, http.MethodGet, "/api/me/databases/ajena/live-connections", req{as: "ana@example.com"}).Code)
 }
 
-// A client whose username equals an administrator's must stay a client: the
-// session subject is namespaced by id, so the name decides nothing.
-func TestClientWithAnAdminsUsernameDoesNotEscalate(t *testing.T) {
+// Administrators and users are one account table: a name can exist once, so
+// "adding an administrator" with a user's name can only be a role change.
+func TestAdministratorsAndUsersShareOneNamespace(t *testing.T) {
 	e := newEnv(t, nil)
 	hash, err := bcrypt.GenerateFromPassword([]byte("a-long-enough-password"), bcrypt.MinCost)
 	require.NoError(t, err)
-	// A legacy account (created before emails) that shares a stored admin's name.
 	_, err = e.meta.CreateClientUser(context.Background(), model.NewClientUser{Username: operator, PasswordHash: string(hash)})
-	require.NoError(t, err)
+	require.Error(t, err, "the administrator's name is taken for users too")
 
-	rec := e.do(t, http.MethodPost, "/api/auth/login", req{body: `{"username":"` + operator + `","password":"a-long-enough-password"}`})
+	_, err = e.meta.CreateClientUser(context.Background(), model.NewClientUser{Username: "plain1", PasswordHash: string(hash)})
+	require.NoError(t, err)
+	rec := e.do(t, http.MethodPost, "/api/auth/login", req{body: `{"username":"plain1","password":"a-long-enough-password"}`})
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	assert.Equal(t, config.RoleClient, decode[map[string]any](t, rec)["role"])
 
@@ -141,7 +142,7 @@ func TestSessionOfAClientNamedLikeTheOwnerIsNotBootstrap(t *testing.T) {
 	e := newEnv(t, nil)
 	u, err := e.meta.CreateClientUser(context.Background(), model.NewClientUser{Username: adminUser, PasswordHash: "x"})
 	require.NoError(t, err)
-	token, _, err := e.auth.Issue(auth.ClientIdentity(u).Subject())
+	token, _, err := e.auth.Issue(auth.AccountIdentity(u).Subject())
 	require.NoError(t, err)
 	r := httptest.NewRequest(http.MethodGet, "/api/auth/session", nil)
 	r.Header.Set(config.HeaderRequestedWith, config.RequestedWithValue)
