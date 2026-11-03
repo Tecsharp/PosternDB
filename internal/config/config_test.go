@@ -291,3 +291,20 @@ func TestAuthModeRejectsMistakes(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), EnvAuthMode)
 }
+
+func TestLandingURL(t *testing.T) {
+	cfg, err := Load(getenv(validEnv()))
+	require.NoError(t, err)
+	assert.Empty(t, cfg.LandingURL, "no guessing: the login links only appear when you set it")
+
+	env := validEnv()
+	env[EnvLandingURL] = "https://posterndb.com/"
+	cfg, err = Load(getenv(env))
+	require.NoError(t, err)
+	assert.Equal(t, "https://posterndb.com", cfg.LandingURL, "the trailing slash is dropped so links join cleanly")
+
+	env[EnvLandingURL] = "posterndb.com"
+	_, err = Load(getenv(env))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), EnvLandingURL)
+}

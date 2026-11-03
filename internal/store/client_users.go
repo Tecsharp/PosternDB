@@ -11,7 +11,7 @@ import (
 
 const clientUserColumns = `id, username, COALESCE(password_hash, ''), never_expires, max_idle_days,
 	created_at, created_by, updated_at, updated_by, last_login_at,
-	COALESCE(email, ''), full_name, COALESCE(google_sub, ''), email_verified_at, needs_username`
+	COALESCE(email, ''), full_name, COALESCE(google_sub, ''), email_verified_at, needs_username, code, role`
 
 // ListClientUsers returns every registered client, for the owner-only
 // "Usuarios" page. Does not include each one's database count; the caller
@@ -47,12 +47,15 @@ func (m *Metadata) GetClientUserByGoogleSub(ctx context.Context, sub string) (mo
 // CreateClientUser registers a new client. CreatedBy is "" for self-service
 // sign-up, or the admin username when the owner adds one directly.
 func (m *Metadata) CreateClientUser(ctx context.Context, n model.NewClientUser) (model.ClientUser, error) {
+	if n.Code == "" {
+		n.Code = model.NewClientCode()
+	}
 	return scanClientUser(m.pool.QueryRow(ctx, `INSERT INTO client_users
-		(username, email, full_name, password_hash, google_sub, created_by, email_verified_at, email_use_accepted_at, needs_username)
+		(username, email, full_name, password_hash, google_sub, created_by, email_verified_at, email_use_accepted_at, needs_username, code, role)
 		VALUES ($1, NULLIF($2, ''), $3, NULLIF($4, ''), NULLIF($5, ''), $6,
-		        CASE WHEN $7 THEN now() END, CASE WHEN $8 THEN now() END, $9)
+		        CASE WHEN $7 THEN now() END, CASE WHEN $8 THEN now() END, $9, $10, COALESCE(NULLIF($11, ''), 'user'))
 		RETURNING `+clientUserColumns,
-		n.Username, n.Email, n.FullName, n.PasswordHash, n.GoogleSub, n.CreatedBy, n.EmailVerified, n.EmailUseAccepted, n.NeedsUsername))
+		n.Username, n.Email, n.FullName, n.PasswordHash, n.GoogleSub, n.CreatedBy, n.EmailVerified, n.EmailUseAccepted, n.NeedsUsername, n.Code, n.Role))
 }
 
 // LinkClientGoogle ties an account to a Google identity. verifyEmail marks
@@ -71,6 +74,12 @@ func (m *Metadata) LinkClientGoogle(ctx context.Context, id int64, sub string, v
 func (m *Metadata) SetClientUsername(ctx context.Context, id int64, username string) (model.ClientUser, error) {
 	return scanClientUser(m.pool.QueryRow(ctx, `UPDATE client_users SET username = $2, needs_username = false,
 		updated_at = now() WHERE id = $1 RETURNING `+clientUserColumns, id, username))
+}
+
+// SetClientRole stores the role of an account (user, viewer or admin).
+func (m *Metadata) SetClientRole(ctx context.Context, id int64, role string) (model.ClientUser, error) {
+	return scanClientUser(m.pool.QueryRow(ctx, `UPDATE client_users SET role = $2, updated_at = now()
+		WHERE id = $1 RETURNING `+clientUserColumns, id, role))
 }
 
 // SetClientFullName stores the person's full name.
@@ -107,7 +116,7 @@ func scanClientUser(row pgx.Row) (model.ClientUser, error) {
 	var u model.ClientUser
 	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.NeverExpires, &u.MaxIdleDays,
 		&u.CreatedAt, &u.CreatedBy, &u.UpdatedAt, &u.UpdatedBy, &u.LastLoginAt,
-		&u.Email, &u.FullName, &u.GoogleSub, &u.EmailVerifiedAt, &u.NeedsUsername)
+		&u.Email, &u.FullName, &u.GoogleSub, &u.EmailVerifiedAt, &u.NeedsUsername, &u.Code, &u.Role)
 	u.Derive()
 	return u, translate(err)
 }

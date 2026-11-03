@@ -2,6 +2,7 @@ package clients
 
 import (
 	"context"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -395,4 +396,31 @@ func TestDelete(t *testing.T) {
 	assert.False(t, ok)
 	assert.Contains(t, store.Actions(), config.ActionClientDeleted)
 	assert.ErrorIs(t, s.Delete(ctx, u.ID, "root"), model.ErrNotFound)
+}
+
+func TestEveryAccountGetsAUniqueStableCode(t *testing.T) {
+	s, _ := newService(t, true)
+	ctx := context.Background()
+	valid := regexp.MustCompile(`^[a-z][a-z0-9]{5}$`)
+
+	byPassword, err := s.Register(ctx, form("ana@example.com"))
+	require.NoError(t, err)
+	byOwner, _, err := s.Create(ctx, "bea@example.com", "Bea Ruiz", "root")
+	require.NoError(t, err)
+	byGoogle, err := s.LoginWithGoogle(ctx, google("g-1", "carlos@example.com"))
+	require.NoError(t, err)
+
+	codes := map[string]bool{}
+	for _, u := range []model.ClientUser{byPassword, byOwner, byGoogle} {
+		assert.Regexp(t, valid, u.Code, u.Email)
+		codes[u.Code] = true
+	}
+	assert.Len(t, codes, 3, "no two people share a code")
+
+	again, _, err := s.Authenticate(ctx, "ana@example.com", strongPassword)
+	require.NoError(t, err)
+	assert.Equal(t, byPassword.Code, again.Code, "the code never changes")
+	changed, err := s.SetUsername(ctx, byPassword.ID, "ana.lopez")
+	require.NoError(t, err)
+	assert.Equal(t, byPassword.Code, changed.Code, "not even when they pick a username")
 }

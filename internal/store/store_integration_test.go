@@ -109,7 +109,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	require.NoError(t, Migrate(context.Background(), pool))
 	var n int
 	require.NoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&n))
-	assert.Equal(t, 8, n)
+	assert.Equal(t, 10, n)
 	var templates int
 	require.NoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM templates").Scan(&templates))
 	assert.Equal(t, 6, templates, "sample templates seeded once, not duplicated by re-running migrations")
@@ -533,4 +533,26 @@ func TestClientUsernameAndLinkColumns(t *testing.T) {
 	diff, err := m.LinkClientGoogle(ctx, third.ID, "sub-it-third", false)
 	require.NoError(t, err)
 	assert.Nil(t, diff.EmailVerifiedAt, "a different Google address does not verify this one")
+}
+
+func TestClientCodeColumn(t *testing.T) {
+	ctx := context.Background()
+	m := NewMetadata(pool)
+
+	given, err := m.CreateClientUser(ctx, model.NewClientUser{Username: "code1@it.test", Email: "code1@it.test", PasswordHash: "h", Code: "q7abc9"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.DeleteClientUser(context.Background(), given.ID) })
+	assert.Equal(t, "q7abc9", given.Code)
+
+	_, err = m.CreateClientUser(ctx, model.NewClientUser{Username: "code2@it.test", Email: "code2@it.test", PasswordHash: "h", Code: "q7abc9"})
+	assert.ErrorIs(t, err, model.ErrConflict, "a code belongs to one person")
+
+	generated, err := m.CreateClientUser(ctx, model.NewClientUser{Username: "code3@it.test", Email: "code3@it.test", PasswordHash: "h"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.DeleteClientUser(context.Background(), generated.ID) })
+	assert.Regexp(t, `^[a-z][a-z0-9]{5}$`, generated.Code, "one is generated when none is given")
+
+	fromDB, err := m.GetClientUserByEmail(ctx, "code3@it.test")
+	require.NoError(t, err)
+	assert.Equal(t, generated.Code, fromDB.Code, "and it is stored")
 }

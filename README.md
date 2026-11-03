@@ -56,14 +56,14 @@ PANEL_HOSTNAME=app.posterndb.com
 
 ### Entrar con Google (opcional)
 
-Con esto tus usuarios entran con un clic y, si olvidan su contraseña, la recuperan con Google: sin servidor de correo que configurar. Tú decides con `AUTH_MODE` si usan Google, contraseña o las dos formas. El administrador siempre entra con su usuario y contraseña.
+Con esto tus usuarios entran con un clic y, si olvidan su contraseña, la recuperan con Google: sin servidor de correo que configurar. Tú decides con `AUTH_MODE` si usan Google, contraseña o las dos formas. El propietario (el de `ADMIN_USER`) y los administradores siempre pueden entrar con su contraseña.
 
 1. En [Google Cloud Console](https://console.cloud.google.com) crea un proyecto. Ve a **APIs y servicios → Pantalla de consentimiento de OAuth**, elige *Externo* y llena el nombre y tu correo.
 2. En **Credenciales → Crear credenciales → ID de cliente de OAuth**, elige *Aplicación web*.
 3. En **URI de redireccionamiento autorizados** agrega exactamente `https://app.posterndb.com/api/auth/google/callback` (cambia `app.posterndb.com` por tu `PANEL_HOSTNAME`).
 4. Copia el *ID de cliente* y el *secreto* en `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` del `.env`, pon `AUTH_MODE=both` (o `google`) y ejecuta `./setup.sh`.
 
-Si dejas esos dos vacíos, el botón no aparece y todo sigue funcionando con correo y contraseña. Google solo sirve para usuarios: nunca abre el panel de administración.
+Si dejas esos dos vacíos, el botón no aparece y todo sigue funcionando con correo y contraseña. El propietario nunca entra con Google. Una cuenta a la que le diste un rol de administrador sí puede abrir el panel de administración con Google, porque es la misma cuenta.
 
 Una cuenta que ya existe con contraseña **no** se abre con Google solo por tener el mismo correo: su dueño la vincula desde *Seguridad*. Así nadie entra a una cuenta ajena.
 
@@ -74,6 +74,7 @@ Otras opciones útiles del `.env`:
 | Variable | Para qué sirve | Por defecto |
 |---|---|---|
 | `DB_EXPIRATION_DAYS` | Días sin uso antes de que una base expire | 30 |
+| `LANDING_URL` | Tu página con la política de privacidad (`/privacy`) y las condiciones (`/terms`); el acceso al panel enlaza ahí | vacío (sin enlaces) |
 | `ALLOW_SELF_REGISTER` | `true` deja que cualquiera cree su cuenta | true |
 | `AUTH_MODE` | Cómo entran los usuarios: `password`, `google` o `both` | `password` (o `both` si llenas Google) |
 | `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` | Activan "Continuar con Google" (ver abajo) | vacío (desactivado) |
@@ -85,16 +86,19 @@ Otras opciones útiles del `.env`:
 Entra a tu panel con el usuario y contraseña que mostró el setup (también están en `.env`).
 
 - **Bases de datos**: crea, mira y borra bases; ve sus tablas y **edita los datos en vivo**, ve el esquema como diagrama y las **conexiones activas**.
-- **Usuarios**: las personas que se registraron (nombre y correo). Puedes agregar o quitar usuarios y generarles una contraseña nueva.
+- **Usuarios**: las personas que se registraron (nombre y correo). Puedes agregar o quitar usuarios, generarles una contraseña nueva y ver la actividad de cada uno.
 - **Expiración**: define cuánto tarda una base sin uso en expirar. Se cambia **para todos** o **por usuario** (por ejemplo, "nunca expira" para un amigo). Un usuario puede tener además una excepción en una base concreta.
 - **Plantillas**: bases de ejemplo listas para usar (tareas, blog, tienda, citas, inventario). Marca cuáles ven tus usuarios.
 - **Respaldos**: manuales, descarga y restauración. Antes de borrar una base expirada se guarda una copia.
-- **Administradores**: suma gente de confianza con permisos de propietario, administrador o solo lectura.
+- **Administradores**: administradores y usuarios son la misma cuenta. Escribe el nombre, correo o código de un usuario, elígelo de la lista y dale el rol de *Administrador* (todo, menos tocar al propietario o la expiración) o *Lector* (solo ve). Quitarle el rol lo devuelve a usuario normal. El propietario viene de `.env` y nadie puede cambiarlo ni quitarlo.
+- **Actividad**: tu propia actividad, y la de toda la plataforma en la otra pestaña. En *Usuarios* y *Administradores* puedes ver la actividad de cada persona.
+
+> Si actualizas desde una versión con administradores aparte, se convierten en cuentas con ese rol (un administrador con el mismo nombre de usuario que un usuario pasa a ser esa misma cuenta) y las sesiones de administrador abiertas deben entrar otra vez. La tabla vieja queda guardada como `admins_migrated`.
 
 ## 4. Usar PosternDB (quien se registra)
 
 1. Entra a la dirección del panel y pulsa **Crear cuenta**. (Si entras con Google, la primera vez eliges tu nombre de usuario). Escribe tu nombre completo, tu correo y una contraseña de 12 caracteres o más, y acepta cómo se usará tu correo (para entrar y para recuperar tu cuenta con Google; no se comparte ni se manda publicidad). Si el dueño activó Google, también puedes pulsar **Continuar con Google**.
-2. Pulsa **Nueva base de datos**, ponle un nombre y, si quieres, empieza con una plantilla de muestra.
+2. Pulsa **Nueva base de datos**, ponle un nombre y, si quieres, empieza con una plantilla de muestra. Tu base se llamará con **tu código personal** al inicio (por ejemplo `k7x9qa-tienda`), y su dirección será `k7x9qa-tienda.posterndb.com`. Así dos personas pueden usar el mismo nombre sin chocar. Tu código lo ves en *Ajustes*.
 3. **Guarda la contraseña que aparece**: solo se muestra una vez (si la pierdes, genera otra en *Ajustes*).
 4. Desde el panel puedes ver y editar tus tablas, ver quién está conectado y cuándo vence tu base.
 
@@ -106,7 +110,7 @@ Tu panel tiene **Mis bases de datos**, **Respaldos**, **Actividad**, **Seguridad
 
 ### Conectar tu aplicación
 
-Tu base vive en internet detrás de Cloudflare. Para usarla desde tu computadora necesitas **cloudflared**, un programa gratuito que abre un puente seguro. El panel tiene un botón **Ver tutorial** al crear la base, y la misma guía vive en `/ayuda` de tu panel. Aquí va resumida.
+Tu base vive en internet detrás de Cloudflare. Para usarla desde tu computadora necesitas **cloudflared**, un programa gratuito que abre un puente seguro. El panel tiene un botón **Ver tutorial** al crear la base, y la misma guía vive en `/help` de tu panel. Aquí va resumida.
 
 **1. Instala cloudflared** ([todas las descargas](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)):
 

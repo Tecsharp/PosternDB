@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 
@@ -74,7 +73,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		s.domainError(w, "register", err)
 		return
 	}
-	token, exp, err := s.Auth.Issue(auth.ClientIdentity(u).Subject())
+	token, exp, err := s.Auth.Issue(auth.AccountIdentity(u).Subject())
 	if err != nil {
 		s.internalError(w, "issue session", err)
 		return
@@ -107,66 +106,59 @@ type passwordChange struct {
 	Next    string `json:"next"`
 }
 
+// changeOwnPassword changes (or, for an account that only used Google so far,
+// creates) the password of whoever is signed in. The owner's password lives in
+// the .env file and cannot be changed from the panel.
 func (s *server) changeOwnPassword(w http.ResponseWriter, r *http.Request) {
-	var req passwordChange
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	s.noContent(w, "change password", s.Admins.ChangeOwnPassword(r.Context(), actor(r), req.Current, req.Next))
-}
-
-func (s *server) changeOwnClientPassword(w http.ResponseWriter, r *http.Request) {
 	var req passwordChange
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	id := auth.FromContext(r.Context()).ClientUserID
 	if id == nil {
-		s.internalError(w, "change client password", errors.New("missing client id in session"))
+		writeError(w, http.StatusBadRequest, "la contraseña del propietario está en el archivo .env")
 		return
 	}
-	s.noContent(w, "change client password", s.Clients.ChangeOwnPassword(r.Context(), *id, req.Current, req.Next))
+	s.noContent(w, "change password", s.Clients.ChangeOwnPassword(r.Context(), *id, req.Current, req.Next))
 }
 
-// ---- administrators (owner only) ------------------------------------------------
+// ---- administrators ---------------------------------------------------------------
 
+// listAdmins returns the owner (fixed, from .env) and the accounts that have
+// the admin or viewer role.
 func (s *server) listAdmins(w http.ResponseWriter, r *http.Request) {
-	list, err := s.Admins.List(r.Context())
-	s.respond(w, "list admins", map[string]any{"admins": list}, err)
+	staff, err := s.Clients.Staff(r.Context())
+	s.respond(w, "list admins", map[string]any{"owner": map[string]string{"username": s.Auth.BootstrapUser()}, "admins": staff}, err)
 }
 
-type adminRequest struct {
-	Username string `json:"username"`
-	Role     string `json:"role"`
+type roleRequest struct {
+	Role string `json:"role"`
 }
 
-func (s *server) createAdmin(w http.ResponseWriter, r *http.Request) {
-	var req adminRequest
+// setClientRole promotes or demotes an account. Anyone who manages users can
+// do it, except to themselves; the owner is not an account, so it is out of reach.
+func (s *server) setClientRole(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var req roleRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	a, password, err := s.Admins.Create(r.Context(), req.Username, req.Role, actor(r))
-	s.secret(w, http.StatusCreated, "create admin", map[string]any{"admin": a, "password": password}, err)
+	u, err := s.Clients.SetRole(r.Context(), id, req.Role, ownAccountID(r), actor(r))
+	s.respond(w, "set role", u, err)
 }
 
-func (s *server) updateAdmin(w http.ResponseWriter, r *http.Request) {
-	var req adminRequest
-	if !decodeJSON(w, r, &req) {
-		return
+// ownAccountID is the signed-in account's id, or 0 for the owner (who has none).
+func ownAccountID(r *http.Request) int64 {
+	if id := auth.FromContext(r.Context()).ClientUserID; id != nil {
+		return *id
 	}
-	s.noContent(w, "update admin", s.Admins.SetRole(r.Context(), urlName(r), req.Role, actor(r)))
+	return 0
 }
 
-func (s *server) resetAdminPassword(w http.ResponseWriter, r *http.Request) {
-	password, err := s.Admins.ResetPassword(r.Context(), urlName(r), actor(r))
-	s.secret(w, http.StatusOK, "reset admin password", map[string]string{"password": password}, err)
-}
-
-func (s *server) deleteAdmin(w http.ResponseWriter, r *http.Request) {
-	s.noContent(w, "delete admin", s.Admins.Delete(r.Context(), urlName(r), actor(r)))
-}
-
-// ---- usuarios / clientes (owner only) --------------------------------------------
+// ---- usuarios ----------------------------------------------------------------------------------------------------------
 
 func (s *server) listClients(w http.ResponseWriter, r *http.Request) {
 	list, err := s.Databases.ListClients(r.Context())
@@ -199,6 +191,10 @@ func (s *server) resetClientPassword(w http.ResponseWriter, r *http.Request) {
 func (s *server) deleteClient(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
+		return
+	}
+	if id == ownAccountID(r) {
+		writeError(w, http.StatusBadRequest, "no puedes eliminar tu propia cuenta desde aquí")
 		return
 	}
 	s.noContent(w, "delete client", s.Clients.Delete(r.Context(), id, actor(r)))

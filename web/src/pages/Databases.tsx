@@ -175,11 +175,11 @@ function DatabaseTable({ rows, settings, operate, onBackup }: { rows: Database[]
               onClick={(e) => {
                 // The whole row opens the database; inner links/buttons keep their own action.
                 if ((e.target as HTMLElement).closest('a,button')) return
-                navigate(to('resumen'))
+                navigate(to('overview'))
               }}
             >
               <th scope="row" className="border-b border-line px-4 py-2.5 font-normal max-md:border-0 max-md:p-0">
-                <a href={to('resumen')} onClick={linkHandler(to('resumen'))} className="font-semibold text-ink hover:text-accent-text">
+                <a href={to('overview')} onClick={linkHandler(to('overview'))} className="font-semibold text-ink hover:text-accent-text">
                   {db.slug}
                 </a>
                 <span className="mt-0.5 block truncate font-mono text-[0.9rem] text-ink-2">{db.hostname || db.database}</span>
@@ -198,17 +198,17 @@ function DatabaseTable({ rows, settings, operate, onBackup }: { rows: Database[]
               <td className="border-b border-line px-3 py-2 text-right whitespace-nowrap max-md:border-0 max-md:p-0 max-md:text-left">
                 {active && operate && (
                   <span className="inline-flex gap-0.5">
-                    <a href={to('datos')} onClick={linkHandler(to('datos'))} className={rowAction} title="Ver y editar datos">
+                    <a href={to('data')} onClick={linkHandler(to('data'))} className={rowAction} title="Ver y editar datos">
                       <TableIcon size={18} aria-hidden />
                       Datos
                       <span className="sr-only"> de {db.slug}</span>
                     </a>
-                    <a href={to('esquema')} onClick={linkHandler(to('esquema'))} className={rowAction} title="Esquema y diagrama">
+                    <a href={to('schema')} onClick={linkHandler(to('schema'))} className={rowAction} title="Esquema y diagrama">
                       <DiagramDownIcon size={18} aria-hidden />
                       Esquema
                       <span className="sr-only"> de {db.slug}</span>
                     </a>
-                    <a href={to('consola')} onClick={linkHandler(to('consola'))} className={rowAction} title="Consola SQL">
+                    <a href={to('console')} onClick={linkHandler(to('console'))} className={rowAction} title="Consola SQL">
                       <CodeSquareIcon size={18} aria-hidden />
                       Consola
                       <span className="sr-only"> SQL de {db.slug}</span>
@@ -220,7 +220,7 @@ function DatabaseTable({ rows, settings, operate, onBackup }: { rows: Database[]
                     </button>
                   </span>
                 )}
-                <a href={to('resumen')} onClick={linkHandler(to('resumen'))} className={rowAction} title="Abrir">
+                <a href={to('overview')} onClick={linkHandler(to('overview'))} className={rowAction} title="Abrir">
                   <AltArrowRightIcon size={18} aria-hidden />
                   <span className="sr-only">Abrir {db.slug}</span>
                 </a>

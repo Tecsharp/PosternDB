@@ -74,8 +74,8 @@ const adminGroups: NavGroup[] = [
     label: 'Gestión',
     items: [
       { to: { page: 'activity' }, label: 'Actividad', icon: PulseIcon, match: (r) => r.page === 'activity' },
-      { to: { page: 'admins' }, label: 'Administradores', icon: UsersGroupRoundedIcon, match: (r) => r.page === 'admins', visible: can.manageAdmins },
-      { to: { page: 'clients' }, label: 'Usuarios', icon: UsersGroupRoundedIcon, match: (r) => r.page === 'clients', visible: can.manageAdmins },
+      { to: { page: 'admins' }, label: 'Administradores', icon: UsersGroupRoundedIcon, match: (r) => r.page === 'admins', visible: can.manageUsers },
+      { to: { page: 'clients' }, label: 'Usuarios', icon: UsersGroupRoundedIcon, match: (r) => r.page === 'clients', visible: can.manageUsers },
       { to: { page: 'expiry' }, label: 'Expiración', icon: ClockCircleIcon, match: (r) => r.page === 'expiry', visible: can.manageExpiry },
       { to: { page: 'settings' }, label: 'Ajustes', icon: SettingsIcon, match: (r) => r.page === 'settings' },
     ],

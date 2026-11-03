@@ -22,7 +22,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/tecsharp/posterndb/internal/admins"
 	"github.com/tecsharp/posterndb/internal/auditor"
 	"github.com/tecsharp/posterndb/internal/auth"
 	"github.com/tecsharp/posterndb/internal/clients"
@@ -31,7 +30,6 @@ import (
 	"github.com/tecsharp/posterndb/internal/credentials"
 	"github.com/tecsharp/posterndb/internal/expiry"
 	"github.com/tecsharp/posterndb/internal/httpapi"
-	"github.com/tecsharp/posterndb/internal/model"
 	"github.com/tecsharp/posterndb/internal/naming"
 	"github.com/tecsharp/posterndb/internal/notify"
 	"github.com/tecsharp/posterndb/internal/oauth"
@@ -84,7 +82,6 @@ type application struct {
 	cluster   *store.Cluster
 	router    cloudflare.Router
 	service   *provision.Service
-	admins    *admins.Service
 	clients   *clients.Service
 	notifier  *notify.Multi
 	inspector *store.Inspector
@@ -131,22 +128,13 @@ func build(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, logger *
 		BackupDir:          cfg.BackupDir,
 		Logger:             logger,
 	})
-	adminSvc := admins.New(meta, secrets, cfg.AdminUser)
-	// A registered user may not take the owner's or an administrator's name.
-	reserved := func(ctx context.Context, name string) (bool, error) {
-		if name == cfg.AdminUser {
-			return true, nil
-		}
-		if _, err := adminSvc.RoleOf(ctx, name); err == nil {
-			return true, nil
-		} else if !errors.Is(err, model.ErrNotFound) {
-			return false, err
-		}
-		return false, nil
+	// A user may not take the owner's username: it would look like the owner in
+	// logs and the activity feed. (Accounts never share the owner's session.)
+	reserved := func(_ context.Context, name string) (bool, error) {
+		return name == cfg.AdminUser, nil
 	}
 	return &application{
 		pool: pool, meta: meta, cluster: cluster, router: router, service: service, inspector: inspector,
-		admins:   adminSvc,
 		clients:  clients.New(meta, secrets, cfg.AllowSelfRegister, clients.WithReservedNames(reserved)),
 		notifier: notify.New(cfg.Notify),
 	}, nil
@@ -199,8 +187,8 @@ func serve(ctx context.Context, cfg *config.Config, app *application, logger *sl
 	}
 	go auditor.New(app.meta, app.cluster, app.service, app.notifier, cfg.CheckInterval, logger).Run(ctx)
 
-	authn := auth.New(cfg.AdminUser, cfg.AdminPassword, cfg.JWTSecret, config.SessionTTL, app.admins, app.clients)
-	authn.SetClientPasswordLogin(cfg.ClientPasswordLogin())
+	authn := auth.New(cfg.AdminUser, cfg.AdminPassword, cfg.JWTSecret, config.SessionTTL, app.clients)
+	authn.SetUserPasswordLogin(cfg.ClientPasswordLogin())
 	var google httpapi.GoogleAuth
 	if cfg.GoogleActive() {
 		google = oauth.NewGoogle(ctx, cfg.Google.ClientID, cfg.Google.ClientSecret, cfg.Google.RedirectURL)
@@ -210,7 +198,6 @@ func serve(ctx context.Context, cfg *config.Config, app *application, logger *sl
 		Auth:      authn,
 		Limiter:   auth.NewRateLimiter(config.LoginRatePerMinute, config.LoginRateBurst),
 		Databases: app.service,
-		Admins:    app.admins,
 		Clients:   app.clients,
 		Google:    google,
 		Audit:     app.meta,
@@ -277,6 +264,7 @@ func settingsFrom(cfg *config.Config) httpapi.Settings {
 		AllowSelfRegister:     cfg.AllowSelfRegister,
 		MaxDatabasesPerClient: cfg.MaxDatabasesPerUser,
 		AuthMode:              cfg.AuthMode,
+		LandingURL:            cfg.LandingURL,
 	}
 }
 

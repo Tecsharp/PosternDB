@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +26,19 @@ func (e env) signUp(t *testing.T, email, name, ip string) *http.Cookie {
 	c := cookieNamed(rec, config.SessionCookieName)
 	require.NotNil(t, c)
 	return c
+}
+
+// slugOf is the full name of a user's database: their personal code, a dash
+// and the name they typed.
+func (e env) slugOf(t *testing.T, email, name string) string {
+	t.Helper()
+	for _, u := range e.meta.ClientUsers {
+		if u.Email == email {
+			return u.Code + "-" + name
+		}
+	}
+	t.Fatalf("no user %s", email)
+	return ""
 }
 
 func send(t *testing.T, e env, method, path, body string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
@@ -60,7 +75,7 @@ func TestLinkingGoogleFromSecurity(t *testing.T) {
 	require.NotNil(t, oauthCk)
 
 	out := get(t, e, "/api/auth/google/callback?code=abc&state="+url.QueryEscape(loc.Query().Get("state")), oauthCk)
-	assert.Equal(t, "/seguridad?google=linked", out.Header().Get("Location"))
+	assert.Equal(t, "/security?google=linked", out.Header().Get("Location"))
 
 	body := decode[map[string]any](t, send(t, e, http.MethodGet, "/api/auth/session", "", session))
 	assert.Equal(t, true, body["googleLinked"])
@@ -118,8 +133,8 @@ func TestLinkingAGoogleAccountAlreadyUsedByAnotherUser(t *testing.T) {
 		require.NotNil(t, ck)
 		return get(t, e, "/api/auth/google/callback?code=abc&state="+url.QueryEscape(strings.Split(ck.Value, ".")[0]), ck)
 	}
-	assert.Equal(t, "/seguridad?google=linked", link(first).Header().Get("Location"))
-	assert.Equal(t, "/seguridad?google=taken", link(second).Header().Get("Location"))
+	assert.Equal(t, "/security?google=linked", link(first).Header().Get("Location"))
+	assert.Equal(t, "/security?google=taken", link(second).Header().Get("Location"))
 }
 
 // ---- account ---------------------------------------------------------------------
@@ -203,9 +218,9 @@ func TestAuthModeGoogleOnlyBlocksClientPasswords(t *testing.T) {
 	newcomer := oauth.Profile{Subject: "g-new", Email: "nueva@example.com", Name: "Nueva Persona", EmailVerified: true}
 	e := newEnvFull(t, nil, &fakeGoogle{profile: newcomer}, config.AuthModeGoogle)
 	e.addClient(t, "ana")
-	cfg := decode[map[string]bool](t, get(t, e, "/api/auth/config"))
-	assert.False(t, cfg["passwordEnabled"])
-	assert.True(t, cfg["googleEnabled"])
+	cfg := decode[map[string]any](t, get(t, e, "/api/auth/config"))
+	assert.Equal(t, false, cfg["passwordEnabled"])
+	assert.Equal(t, true, cfg["googleEnabled"])
 
 	assert.Equal(t, http.StatusBadRequest, e.do(t, http.MethodPost, "/api/auth/register", req{body: registerBody("x@example.com", "Equis Uno")}).Code, "no password sign-up")
 	assert.Equal(t, http.StatusUnauthorized, e.do(t, http.MethodPost, "/api/auth/login",
@@ -219,9 +234,9 @@ func TestAuthModeGoogleOnlyBlocksClientPasswords(t *testing.T) {
 
 func TestAuthModePasswordHasNoGoogle(t *testing.T) {
 	e := newEnvFull(t, nil, nil, config.AuthModePassword)
-	cfg := decode[map[string]bool](t, get(t, e, "/api/auth/config"))
-	assert.True(t, cfg["passwordEnabled"])
-	assert.False(t, cfg["googleEnabled"])
+	cfg := decode[map[string]any](t, get(t, e, "/api/auth/config"))
+	assert.Equal(t, true, cfg["passwordEnabled"])
+	assert.Equal(t, false, cfg["googleEnabled"])
 	assert.Equal(t, http.StatusNotFound, get(t, e, "/api/auth/google/start").Code)
 	e.signUp(t, "ana@example.com", "Ana López", "203.0.113.1")
 }
@@ -244,22 +259,23 @@ func TestClientBackupsAreScopedToTheirOwnDatabases(t *testing.T) {
 	require.Equal(t, http.StatusCreated, send(t, e, http.MethodPost, "/api/me/databases", `{"name":"mia"}`, ana).Code)
 	require.Equal(t, http.StatusCreated, send(t, e, http.MethodPost, "/api/me/databases", `{"name":"suya"}`, bea).Code)
 
-	assert.Equal(t, http.StatusAccepted, send(t, e, http.MethodPost, "/api/me/databases/mia/backups", "", ana).Code)
-	assert.Equal(t, http.StatusAccepted, send(t, e, http.MethodPost, "/api/me/databases/suya/backups", "", bea).Code)
-	assert.Equal(t, http.StatusNotFound, send(t, e, http.MethodPost, "/api/me/databases/suya/backups", "", ana).Code, "not another user's database")
+	mia, suya := e.slugOf(t, "ana@example.com", "mia"), e.slugOf(t, "bea@example.com", "suya")
+	assert.Equal(t, http.StatusAccepted, send(t, e, http.MethodPost, "/api/me/databases/"+mia+"/backups", "", ana).Code)
+	assert.Equal(t, http.StatusAccepted, send(t, e, http.MethodPost, "/api/me/databases/"+suya+"/backups", "", bea).Code)
+	assert.Equal(t, http.StatusNotFound, send(t, e, http.MethodPost, "/api/me/databases/"+suya+"/backups", "", ana).Code, "not another user's database")
 	assert.Equal(t, http.StatusNotFound, send(t, e, http.MethodPost, "/api/me/databases/ajena/backups", "", ana).Code, "nor an admin database")
 	e.markBackupsDone()
 
 	list := decode[struct{ Backups []model.Job }](t, send(t, e, http.MethodGet, "/api/me/backups", "", ana))
 	require.Len(t, list.Backups, 1)
-	assert.Equal(t, "mia", list.Backups[0].Slug)
+	assert.Equal(t, mia, list.Backups[0].Slug)
 
 	var mine, theirs int64
 	for _, j := range e.meta.Jobs {
-		if j.Slug == "mia" {
+		if j.Slug == mia {
 			mine = j.ID
 		}
-		if j.Slug == "suya" {
+		if j.Slug == suya {
 			theirs = j.ID
 		}
 	}
@@ -281,15 +297,16 @@ func TestClientBackupLimits(t *testing.T) {
 	ana := e.signUp(t, "ana@example.com", "Ana López", "203.0.113.1")
 	require.Equal(t, http.StatusCreated, send(t, e, http.MethodPost, "/api/me/databases", `{"name":"mia"}`, ana).Code)
 
-	require.Equal(t, http.StatusAccepted, send(t, e, http.MethodPost, "/api/me/databases/mia/backups", "", ana).Code)
-	assert.Equal(t, http.StatusConflict, send(t, e, http.MethodPost, "/api/me/databases/mia/backups", "", ana).Code, "one at a time")
+	mia := e.slugOf(t, "ana@example.com", "mia")
+	require.Equal(t, http.StatusAccepted, send(t, e, http.MethodPost, "/api/me/databases/"+mia+"/backups", "", ana).Code)
+	assert.Equal(t, http.StatusConflict, send(t, e, http.MethodPost, "/api/me/databases/"+mia+"/backups", "", ana).Code, "one at a time")
 
 	e.markBackupsDone()
 	for i := 1; i < config.MaxClientBackupsPerDatabase; i++ {
-		require.Equal(t, http.StatusAccepted, send(t, e, http.MethodPost, "/api/me/databases/mia/backups", "", ana).Code, "backup %d", i+1)
+		require.Equal(t, http.StatusAccepted, send(t, e, http.MethodPost, "/api/me/databases/"+mia+"/backups", "", ana).Code, "backup %d", i+1)
 		e.markBackupsDone()
 	}
-	assert.Equal(t, http.StatusForbidden, send(t, e, http.MethodPost, "/api/me/databases/mia/backups", "", ana).Code, "capped so nobody fills the disk")
+	assert.Equal(t, http.StatusForbidden, send(t, e, http.MethodPost, "/api/me/databases/"+mia+"/backups", "", ana).Code, "capped so nobody fills the disk")
 }
 
 // ---- activity -------------------------------------------------------------------
@@ -335,4 +352,103 @@ func TestClientActivityEndpoint(t *testing.T) {
 	for _, entry := range list.Entries {
 		assert.NotEqual(t, "ajena", entry.Target, "another database's activity never shows")
 	}
+}
+
+// ---- database names carry the user's code ---------------------------------------
+
+func TestClientDatabaseNameStartsWithTheUsersCode(t *testing.T) {
+	e := newEnv(t, nil)
+	ana := e.signUp(t, "ana@example.com", "Ana López", "203.0.113.1")
+	code := e.slugOf(t, "ana@example.com", "")
+
+	rec := send(t, e, http.MethodPost, "/api/me/databases", `{"name":"Tienda"}`, ana)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	creds := decode[model.Credentials](t, rec)
+	assert.Equal(t, "pdb_"+strings.TrimSuffix(strings.ReplaceAll(code, "-", "_"), "_")+"_tienda", creds.Database, "the database and role carry the code too")
+	assert.Equal(t, "postern-"+code+"tienda.pachislab.com", creds.Hostname, "and so does the public host")
+
+	list := decode[struct{ Databases []provisionView }](t, send(t, e, http.MethodGet, "/api/me/databases", "", ana))
+	require.Len(t, list.Databases, 1)
+	assert.Equal(t, code+"tienda", list.Databases[0].Slug)
+}
+
+type provisionView struct {
+	Slug string `json:"slug"`
+}
+
+func TestTwoUsersCanUseTheSameDatabaseName(t *testing.T) {
+	e := newEnv(t, nil)
+	ana := e.signUp(t, "ana@example.com", "Ana López", "203.0.113.1")
+	bea := e.signUp(t, "bea@example.com", "Bea Ruiz", "203.0.113.2")
+
+	a := send(t, e, http.MethodPost, "/api/me/databases", `{"name":"triburide"}`, ana)
+	b := send(t, e, http.MethodPost, "/api/me/databases", `{"name":"triburide"}`, bea)
+	require.Equal(t, http.StatusCreated, a.Code, a.Body.String())
+	require.Equal(t, http.StatusCreated, b.Code, b.Body.String())
+	assert.NotEqual(t, decode[model.Credentials](t, a).Hostname, decode[model.Credentials](t, b).Hostname, "same name, different public address")
+
+	assert.Equal(t, http.StatusConflict, send(t, e, http.MethodPost, "/api/me/databases", `{"name":"triburide"}`, ana).Code, "but not twice for the same person")
+}
+
+func TestClientDatabaseNameRules(t *testing.T) {
+	e := newEnv(t, nil)
+	ana := e.signUp(t, "ana@example.com", "Ana López", "203.0.113.1")
+	e.createDB(t, "triburide") // an admin database with the bare name
+
+	for name, body := range map[string]string{
+		"too short":      `{"name":"ab"}`,
+		"bad characters": `{"name":"mi tienda"}`,
+		"starts digit":   `{"name":"1tienda"}`,
+		"too long":       `{"name":"` + strings.Repeat("a", 40) + `"}`,
+	} {
+		rec := send(t, e, http.MethodPost, "/api/me/databases", body, ana)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, name)
+	}
+	long := send(t, e, http.MethodPost, "/api/me/databases", `{"name":"`+strings.Repeat("a", 40)+`"}`, ana)
+	assert.Contains(t, long.Body.String(), "tu código", "the message explains the code takes room")
+
+	assert.Equal(t, http.StatusCreated, send(t, e, http.MethodPost, "/api/me/databases", `{"name":"triburide"}`, ana).Code,
+		"a bare admin name never blocks a user's prefixed one")
+	longest := strings.Repeat("a", 33)
+	assert.Equal(t, http.StatusCreated, send(t, e, http.MethodPost, "/api/me/databases", `{"name":"`+longest+`"}`, ana).Code, "the longest name that still fits")
+}
+
+func TestAccountShowsTheCodeAndWhereDatabasesLive(t *testing.T) {
+	e := newEnv(t, nil)
+	ana := e.signUp(t, "ana@example.com", "Ana López", "203.0.113.1")
+	acct := decode[map[string]any](t, send(t, e, http.MethodGet, "/api/me/account", "", ana))
+	assert.Equal(t, strings.TrimSuffix(e.slugOf(t, "ana@example.com", ""), "-"), acct["code"])
+	assert.Len(t, acct["code"], 6)
+	assert.Equal(t, "postern-", acct["hostPrefix"])
+	assert.Equal(t, "pachislab.com", acct["baseDomain"])
+	assert.Equal(t, false, acct["localMode"])
+}
+
+func TestRestoringABackupAlsoUsesTheCode(t *testing.T) {
+	e := newEnv(t, nil)
+	ana := e.signUp(t, "ana@example.com", "Ana López", "203.0.113.1")
+	require.Equal(t, http.StatusCreated, send(t, e, http.MethodPost, "/api/me/databases", `{"name":"mia"}`, ana).Code)
+	mia := e.slugOf(t, "ana@example.com", "mia")
+	require.Equal(t, http.StatusAccepted, send(t, e, http.MethodPost, "/api/me/databases/"+mia+"/backups", "", ana).Code)
+	e.markBackupsDone()
+	var id int64
+	for _, j := range e.meta.Jobs {
+		if j.Slug == mia {
+			id = j.ID
+		}
+	}
+	require.NotZero(t, id)
+	require.NoError(t, os.WriteFile(filepath.Join(e.backups, e.meta.Jobs[0].File), []byte("dump"), 0o600))
+
+	rec := send(t, e, http.MethodPost, "/api/me/backups/"+itoa(id)+"/restore", `{"name":"copia"}`, ana)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	assert.Equal(t, e.slugOf(t, "ana@example.com", "copia"), strings.TrimPrefix(strings.TrimSuffix(decode[model.Credentials](t, rec).Hostname, ".pachislab.com"), "postern-"))
+}
+
+func TestPublicConfigTellsTheLoginWhereThePolicyLives(t *testing.T) {
+	none := newEnv(t, nil)
+	assert.Equal(t, "", decode[map[string]any](t, get(t, none, "/api/auth/config"))["landingUrl"], "no link until LANDING_URL is set")
+
+	e := newEnvFull(t, nil, nil, config.AuthModePassword, func(s *Settings) { s.LandingURL = "https://posterndb.com" })
+	assert.Equal(t, "https://posterndb.com", decode[map[string]any](t, get(t, e, "/api/auth/config"))["landingUrl"])
 }

@@ -16,7 +16,7 @@ const googleMessages: Record<string, { ok: boolean; text: string }> = {
   failed: { ok: false, text: 'No pudimos vincular Google. Inténtalo de nuevo.' },
 }
 
-/** Google redirects back to "/seguridad?google=<reason>" after linking. */
+/** Google redirects back to "/security?google=<reason>" after linking. */
 function takeGoogleResult(): { ok: boolean; text: string } | null {
   const reason = new URLSearchParams(window.location.search).get('google')
   if (!reason) return null
