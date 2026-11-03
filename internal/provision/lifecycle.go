@@ -365,7 +365,7 @@ type HostnameChange struct {
 }
 
 // MigrateHostnames moves every active database to the hostname scheme in the
-// current configuration (e.g. postern-acme.pachislab.com -> acme.posterndb.com).
+// current configuration (e.g. postern-acme.midominio.com -> acme.midominio.com).
 // The new route is published before the old one is removed.
 func (s *Service) MigrateHostnames(ctx context.Context, dryRun bool, actor string) ([]HostnameChange, error) {
 	if s.opts.Resolver.Local {

@@ -9,10 +9,10 @@ const now = Date.now()
 const iso = (offsetDays: number) => new Date(now + offsetDays * DAY).toISOString()
 
 const settings = {
-  baseDomain: 'pachislab.com',
-  panelHostname: 'postern.pachislab.com',
+  baseDomain: 'posterndb.com',
+  panelHostname: 'app.posterndb.com',
   clientHostPrefix: 'postern-',
-  exampleHostname: 'postern-cliente1.pachislab.com',
+  exampleHostname: 'postern-cliente1.posterndb.com',
   expirationDays: 30,
   expiringSoonDays: 7,
   checkIntervalHours: 6,
@@ -32,7 +32,7 @@ const mk = (id: number, slug: string, created: number, seen: number, status: str
   slug,
   database: `pdb_${slug.replaceAll('-', '_')}`,
   username: `pdb_${slug.replaceAll('-', '_')}`,
-  hostname: `postern-${slug}.pachislab.com`,
+  hostname: `postern-${slug}.posterndb.com`,
   state: status === 'expirada' ? 'expired' : 'active',
   createdAt: iso(created),
   lastSeenAt: iso(seen),
@@ -115,7 +115,7 @@ const audit = [
   { id: 7, occurredAt: iso(-0.01), actor: 'admin', action: 'query_executed', target: 'taller-motos', details: { sql: 'SELECT count(*) FROM miembros' } },
   { id: 6, occurredAt: iso(-0.05), actor: 'inactivity-auditor', action: 'inactivity_audit_run', target: '', details: { checked: 4, activeSeen: 3, expired: 0 } },
   { id: 5, occurredAt: iso(-0.06), actor: 'inactivity-auditor', action: 'activity_detected', target: 'catinv', details: { openConnections: 4, newSessions: 12 } },
-  { id: 4, occurredAt: iso(-2), actor: 'admin', action: 'db_created', target: 'taller-motos', details: { hostname: 'postern-taller-motos.pachislab.com' } },
+  { id: 4, occurredAt: iso(-2), actor: 'admin', action: 'db_created', target: 'taller-motos', details: { hostname: 'postern-taller-motos.posterndb.com' } },
   { id: 3, occurredAt: iso(-2.1), actor: 'system', action: 'login_failed', target: '', details: { ip: '189.203.10.4' } },
   { id: 2, occurredAt: iso(-15), actor: 'inactivity-auditor', action: 'db_expired', target: 'demo-feria', details: {} },
   { id: 1, occurredAt: iso(-15), actor: 'backup-sidecar', action: 'backup_completed', target: 'demo-feria', details: { file: '/backups/pdbarch_demo_feria_20261018.dump' } },
@@ -152,7 +152,7 @@ const myActivity = [
   { id: 9, occurredAt: iso(-0.02), actor: 'ana@ejemplo.com', action: 'backup_requested', target: 'ana-tienda', details: { file: 'pdb_ana_tienda_20261101.dump' } },
   { id: 8, occurredAt: iso(-0.5), actor: 'ana@ejemplo.com', action: 'login_success', target: '', details: { ip: '189.203.10.4' } },
   { id: 7, occurredAt: iso(-3), actor: 'administrador', action: 'client_password_reset', target: 'ana@ejemplo.com' },
-  { id: 6, occurredAt: iso(-5), actor: 'ana@ejemplo.com', action: 'db_created', target: 'ana-tienda', details: { hostname: 'postern-ana-tienda.pachislab.com' } },
+  { id: 6, occurredAt: iso(-5), actor: 'ana@ejemplo.com', action: 'db_created', target: 'ana-tienda', details: { hostname: 'postern-ana-tienda.posterndb.com' } },
   { id: 5, occurredAt: iso(-20), actor: 'ana@ejemplo.com', action: 'client_registered', target: 'ana@ejemplo.com', details: { method: 'password' } },
 ]
 let loggedIn = false

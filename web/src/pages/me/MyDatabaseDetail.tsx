@@ -118,12 +118,14 @@ function ConexionTab({ slug }: { slug: string }) {
           ['Usuario', <span className="font-mono">{info.username}</span>],
         ]}
       />
-      <p className="px-5 pb-2 text-[0.85rem] text-ink-2">La contraseña no se guarda: genera una nueva en Ajustes si la perdiste.</p>
-      <p className="px-5 pb-4 text-[0.9rem]">
-        <a className="text-accent-text hover:underline" href={`/ayuda?host=${encodeURIComponent(info.hostname)}`} target="_blank" rel="noopener noreferrer">
-          Ver tutorial: cómo abrir el puente con cloudflared
-        </a>
-      </p>
+      <p className={`px-5 text-[0.85rem] text-ink-2 ${info.localMode ? 'pb-4' : 'pb-2'}`}>La contraseña no se guarda: genera una nueva en Ajustes si la perdiste.</p>
+      {!info.localMode && (
+        <p className="px-5 pb-4 text-[0.9rem]">
+          <a className="text-accent-text hover:underline" href={`/ayuda?host=${encodeURIComponent(info.hostname)}`} target="_blank" rel="noopener noreferrer">
+            Ver tutorial: cómo abrir el puente con cloudflared
+          </a>
+        </p>
+      )}
     </Panel>
   )
 }

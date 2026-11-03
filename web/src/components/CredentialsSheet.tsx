@@ -38,6 +38,12 @@ export function CredentialsSheet({
           />
         </div>
 
+        {credentials.localMode && (
+          <Notice tone="info">
+            Estás en modo local: tu base responde directo en <span className="font-mono text-ink">localhost:{credentials.port}</span>, sin túnel. No necesitas cloudflared; el tutorial aparece cuando publicas tus bases por Cloudflare.
+          </Notice>
+        )}
+
         {!credentials.localMode && (
           <Notice tone="info">
             Antes de conectar, abre el túnel en la máquina cliente:

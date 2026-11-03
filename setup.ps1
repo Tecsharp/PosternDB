@@ -76,7 +76,8 @@ function Test-Var([string]$Key) { return [bool](Read-EnvLines | Where-Object { $
 function Get-Var([string]$Key) {
     $line = Read-EnvLines | Where-Object { $_ -match "^$Key=" } | Select-Object -Last 1
     if (-not $line) { return '' }
-    return ($line.Substring($Key.Length + 1)).Trim('"')
+    # A stray space after the value ("LOCAL_MODE=true ") must not change its meaning.
+    return ($line.Substring($Key.Length + 1)).Trim().Trim('"')
 }
 
 function Set-Var([string]$Key, [string]$Value) {

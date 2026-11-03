@@ -22,7 +22,7 @@ import { can, type Role, type Session } from '../api'
 import { href, linkHandler, type Route } from '../router'
 import { Button } from './ui'
 
-/** Server-rack mark in the PachisLab style: "Postern" + green "DB". */
+/** Server-rack mark: "Postern" + accent-colored "DB". */
 export function Logo({ size = 'md' }: { size?: 'md' | 'lg' }) {
   const box = size === 'lg' ? 'size-11' : 'size-7'
   const text = size === 'lg' ? 'text-[1.9rem]' : 'text-[1.05rem]'

@@ -73,6 +73,8 @@ get_var() {
   local line
   line=$(grep -E "^$1=" "$ENV_FILE" | tail -n 1 || true)
   line=${line#*=}
+  # A stray space after the value ("LOCAL_MODE=true ") must not change its meaning.
+  line=${line#"${line%%[![:space:]]*}"}; line=${line%"${line##*[![:space:]]}"}
   line=${line%\"}; line=${line#\"}
   printf '%s' "$line"
 }
