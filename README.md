@@ -56,14 +56,16 @@ PANEL_HOSTNAME=app.posterndb.com
 
 ### Entrar con Google (opcional)
 
-Con esto tus usuarios entran con un clic y, si olvidan su contraseña, la recuperan con Google: sin servidor de correo que configurar.
+Con esto tus usuarios entran con un clic y, si olvidan su contraseña, la recuperan con Google: sin servidor de correo que configurar. Tú decides con `AUTH_MODE` si usan Google, contraseña o las dos formas. El administrador siempre entra con su usuario y contraseña.
 
 1. En [Google Cloud Console](https://console.cloud.google.com) crea un proyecto. Ve a **APIs y servicios → Pantalla de consentimiento de OAuth**, elige *Externo* y llena el nombre y tu correo.
 2. En **Credenciales → Crear credenciales → ID de cliente de OAuth**, elige *Aplicación web*.
 3. En **URI de redireccionamiento autorizados** agrega exactamente `https://app.posterndb.com/api/auth/google/callback` (cambia `app.posterndb.com` por tu `PANEL_HOSTNAME`).
-4. Copia el *ID de cliente* y el *secreto* en `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` del `.env` y ejecuta `./setup.sh`.
+4. Copia el *ID de cliente* y el *secreto* en `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` del `.env`, pon `AUTH_MODE=both` (o `google`) y ejecuta `./setup.sh`.
 
 Si dejas esos dos vacíos, el botón no aparece y todo sigue funcionando con correo y contraseña. Google solo sirve para usuarios: nunca abre el panel de administración.
+
+Una cuenta que ya existe con contraseña **no** se abre con Google solo por tener el mismo correo: su dueño la vincula desde *Seguridad*. Así nadie entra a una cuenta ajena.
 
 Si compartes el dominio con otras cosas, usa `CLIENT_HOST_PREFIX=postern-` y las bases quedan como `postern-nombre.tudominio.com`.
 
@@ -73,6 +75,7 @@ Otras opciones útiles del `.env`:
 |---|---|---|
 | `DB_EXPIRATION_DAYS` | Días sin uso antes de que una base expire | 30 |
 | `ALLOW_SELF_REGISTER` | `true` deja que cualquiera cree su cuenta | true |
+| `AUTH_MODE` | Cómo entran los usuarios: `password`, `google` o `both` | `password` (o `both` si llenas Google) |
 | `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` | Activan "Continuar con Google" (ver abajo) | vacío (desactivado) |
 | `MAX_DATABASES_PER_CLIENT` | Bases que puede crear cada usuario | 3 |
 | `LOCAL_MODE` | `true` para probar sin Cloudflare, solo en tu máquina | false |
@@ -90,22 +93,44 @@ Entra a tu panel con el usuario y contraseña que mostró el setup (también est
 
 ## 4. Usar PosternDB (quien se registra)
 
-1. Entra a la dirección del panel y pulsa **Crear cuenta**. Escribe tu nombre completo, tu correo y una contraseña de 12 caracteres o más, y acepta cómo se usará tu correo (para entrar y para recuperar tu cuenta con Google; no se comparte ni se manda publicidad). Si el dueño activó Google, también puedes pulsar **Continuar con Google**.
+1. Entra a la dirección del panel y pulsa **Crear cuenta**. (Si entras con Google, la primera vez eliges tu nombre de usuario). Escribe tu nombre completo, tu correo y una contraseña de 12 caracteres o más, y acepta cómo se usará tu correo (para entrar y para recuperar tu cuenta con Google; no se comparte ni se manda publicidad). Si el dueño activó Google, también puedes pulsar **Continuar con Google**.
 2. Pulsa **Nueva base de datos**, ponle un nombre y, si quieres, empieza con una plantilla de muestra.
 3. **Guarda la contraseña que aparece**: solo se muestra una vez (si la pierdes, genera otra en *Ajustes*).
 4. Desde el panel puedes ver y editar tus tablas, ver quién está conectado y cuándo vence tu base.
 
 Solo ves tus propias bases. Conectarte a una base reinicia su contador de inactividad.
 
-**¿Olvidaste tu contraseña?** Entra con Google usando el mismo correo y crea una nueva desde el icono de la llave. Si no hay Google, pídele al dueño una nueva en *Usuarios → Nueva contraseña*.
+Tu panel tiene **Mis bases de datos**, **Respaldos**, **Actividad**, **Seguridad** (nombre de usuario, contraseña y Google) y **Ajustes**. Marca **Recordarme** al entrar para no volver a escribir tus datos cada vez.
+
+**¿Olvidaste tu contraseña?** Entra con Google (si ya vinculaste tu cuenta en *Seguridad*) y crea una nueva. Si no hay Google, pídele al dueño una nueva en *Usuarios → Nueva contraseña*.
 
 ### Conectar tu aplicación
 
-En tu computadora o servidor instala [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) y abre el puente (deja esa ventana abierta):
+Tu base vive en internet detrás de Cloudflare. Para usarla desde tu computadora necesitas **cloudflared**, un programa gratuito que abre un puente seguro. El panel tiene un botón **Ver tutorial** al crear la base, y la misma guía vive en `/ayuda` de tu panel. Aquí va resumida.
+
+**1. Instala cloudflared** ([todas las descargas](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)):
+
+| Sistema | Comando |
+|---|---|
+| Windows (PowerShell) | `winget install --id Cloudflare.cloudflared` |
+| macOS (Terminal) | `brew install cloudflared` |
+| Linux (Debian/Ubuntu) | `curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && sudo dpkg -i cloudflared.deb` |
+
+Cierra la terminal y ábrela otra vez. Comprueba con `cloudflared --version`.
+
+**2. Si dice que no encuentra el comando**, falta agregarlo al PATH (la lista de carpetas donde tu sistema busca programas):
+
+- **Windows:** el programa queda en `C:\Program Files (x86)\cloudflared`. En PowerShell: `[Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\Program Files (x86)\cloudflared", "User")`, y abre una PowerShell nueva. También puedes hacerlo con `Windows + R` → `sysdm.cpl` → Opciones avanzadas → Variables de entorno → Path → Editar → Nuevo.
+- **macOS (Apple Silicon):** `echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile` y abre una Terminal nueva.
+- **Linux:** instálalo en `/usr/local/bin` (ya está en el PATH) o agrega tu carpeta con `echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc`.
+
+**3. Abre el puente** y deja esa ventana abierta:
 
 ```bash
 cloudflared access tcp --hostname nombre.posterndb.com --url localhost:5432
 ```
+
+Si el puerto 5432 está ocupado, usa otro, por ejemplo `--url localhost:15432`, y ponlo igual en tu aplicación.
 
 Luego conecta tu app como si la base estuviera en tu propia máquina. Ejemplo con Spring Boot:
 

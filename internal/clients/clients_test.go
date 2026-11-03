@@ -127,10 +127,11 @@ func TestGoogleCreatesAccountWithoutPassword(t *testing.T) {
 
 	u, err := s.LoginWithGoogle(ctx, google("g-1", "Ana@Example.com"))
 	require.NoError(t, err)
-	assert.Equal(t, "ana@example.com", u.Username)
+	assert.Equal(t, "ana@example.com", u.Username, "the email is the username until they pick one")
 	assert.Equal(t, "Ana López", u.FullName)
 	assert.True(t, u.GoogleLinked)
 	assert.False(t, u.HasPassword)
+	assert.True(t, u.NeedsUsername, "a new Google account must choose a username")
 	assert.NotNil(t, u.EmailVerifiedAt)
 	assert.Contains(t, store.Actions(), config.ActionClientRegistered)
 
@@ -161,45 +162,87 @@ func TestGoogleFallsBackToEmailPrefixWhenNameIsMissing(t *testing.T) {
 	assert.Equal(t, "carlos", u.FullName)
 }
 
-func TestGoogleLinksExistingAccountAndDropsAnUnverifiedPassword(t *testing.T) {
+// The email exists because someone registered it with a password. Proving the
+// address through Google must NOT hand that account over: it may have been
+// created by a third party, so the owner links Google from inside the account.
+func TestGoogleDoesNotEnterAnExistingUnlinkedAccount(t *testing.T) {
 	s, store := newService(t, true)
 	ctx := context.Background()
-	// Whoever typed this email first set a password, without proving the email.
-	squatted, err := s.Register(ctx, form("ana@example.com"))
+	existing, err := s.Register(ctx, form("ana@example.com"))
 	require.NoError(t, err)
 
-	linked, err := s.LoginWithGoogle(ctx, google("g-1", "ana@example.com"))
+	_, err = s.LoginWithGoogle(ctx, google("g-1", "ana@example.com"))
+	assert.ErrorIs(t, err, ErrGoogleNotLinked)
+
+	after := store.ClientUsers[existing.ID]
+	assert.False(t, after.GoogleLinked, "nothing was linked behind the owner's back")
+	assert.True(t, after.HasPassword, "and the password is untouched")
+	_, ok, _ := s.Authenticate(ctx, "ana@example.com", strongPassword)
+	assert.True(t, ok)
+	assert.Len(t, store.ClientUsers, 1, "no second account was created")
+}
+
+func TestLinkingGoogleFromInsideTheAccount(t *testing.T) {
+	s, store := newService(t, true)
+	ctx := context.Background()
+	u, err := s.Register(ctx, form("ana@example.com"))
 	require.NoError(t, err)
-	assert.Equal(t, squatted.ID, linked.ID, "same account, now linked")
+
+	linked, err := s.LinkGoogle(ctx, u.ID, google("g-1", "ANA@example.com"))
+	require.NoError(t, err)
 	assert.True(t, linked.GoogleLinked)
-	assert.False(t, linked.HasPassword, "the password set before the email was proven is removed")
-	assert.NotNil(t, linked.EmailVerifiedAt)
+	assert.True(t, linked.HasPassword, "linking keeps the password")
+	assert.NotNil(t, linked.EmailVerifiedAt, "Google vouched for the account's own email")
 	assert.Contains(t, store.Actions(), config.ActionClientGoogleLinked)
 
-	_, ok, _ := s.Authenticate(ctx, "ana@example.com", strongPassword)
-	assert.False(t, ok, "the old password no longer works")
+	again, err := s.LoginWithGoogle(ctx, google("g-1", "ana@example.com"))
+	require.NoError(t, err, "after linking, Google signs them in")
+	assert.Equal(t, u.ID, again.ID)
 
-	// With Google proof they can set a new password without a current one.
-	require.NoError(t, s.ChangeOwnPassword(ctx, linked.ID, "", "another long password"))
-	_, ok, _ = s.Authenticate(ctx, "ana@example.com", "another long password")
-	assert.True(t, ok)
+	idem, err := s.LinkGoogle(ctx, u.ID, google("g-1", "ana@example.com"))
+	require.NoError(t, err)
+	assert.Equal(t, u.ID, idem.ID, "linking the same Google account twice is harmless")
 }
 
-func TestGoogleKeepsThePasswordOfAVerifiedAccount(t *testing.T) {
+func TestLinkingADifferentGoogleEmailDoesNotVerifyTheAccountEmail(t *testing.T) {
 	s, _ := newService(t, true)
 	ctx := context.Background()
-	first, err := s.LoginWithGoogle(ctx, google("g-1", "ana@example.com"))
+	u, err := s.Register(ctx, form("ana@work.example"))
 	require.NoError(t, err)
-	require.NoError(t, s.ChangeOwnPassword(ctx, first.ID, "", strongPassword))
 
-	again, err := s.LoginWithGoogle(ctx, google("g-1", "ana@example.com"))
+	linked, err := s.LinkGoogle(ctx, u.ID, google("g-1", "ana.personal@gmail.com"))
 	require.NoError(t, err)
-	assert.True(t, again.HasPassword, "signing in with Google again does not remove a password the user chose")
-	_, ok, _ := s.Authenticate(ctx, "ana@example.com", strongPassword)
-	assert.True(t, ok)
+	assert.True(t, linked.GoogleLinked)
+	assert.Nil(t, linked.EmailVerifiedAt, "Google proved another address, not this one")
+
+	in, err := s.LoginWithGoogle(ctx, google("g-1", "ana.personal@gmail.com"))
+	require.NoError(t, err)
+	assert.Equal(t, u.ID, in.ID, "the link is by Google's id, not by email")
 }
 
-func TestGoogleRefusesADifferentGoogleAccountForTheSameEmail(t *testing.T) {
+func TestLinkingGoogleRefusals(t *testing.T) {
+	s, _ := newService(t, true)
+	ctx := context.Background()
+	ana, err := s.Register(ctx, form("ana@example.com"))
+	require.NoError(t, err)
+	bea, err := s.Register(ctx, form("bea@example.com"))
+	require.NoError(t, err)
+	_, err = s.LinkGoogle(ctx, ana.ID, google("g-ana", "ana@example.com"))
+	require.NoError(t, err)
+
+	_, err = s.LinkGoogle(ctx, bea.ID, google("g-ana", "ana@example.com"))
+	assert.ErrorIs(t, err, ErrGoogleTaken, "a Google account belongs to one user")
+	_, err = s.LinkGoogle(ctx, ana.ID, google("g-other", "ana@example.com"))
+	assert.ErrorIs(t, err, ErrGoogleMismatch, "an account links one Google account")
+	g := google("g-bea", "bea@example.com")
+	g.EmailVerified = false
+	_, err = s.LinkGoogle(ctx, bea.ID, g)
+	assert.ErrorIs(t, err, ErrGoogleUnverified)
+	_, err = s.LinkGoogle(ctx, 9999, google("g-x", "x@example.com"))
+	assert.ErrorIs(t, err, model.ErrNotFound)
+}
+
+func TestGoogleOnEmailLinkedToAnotherGoogleAccount(t *testing.T) {
 	s, _ := newService(t, true)
 	ctx := context.Background()
 	_, err := s.LoginWithGoogle(ctx, google("g-1", "ana@example.com"))
@@ -207,6 +250,78 @@ func TestGoogleRefusesADifferentGoogleAccountForTheSameEmail(t *testing.T) {
 
 	_, err = s.LoginWithGoogle(ctx, google("g-OTHER", "ana@example.com"))
 	assert.ErrorIs(t, err, ErrGoogleMismatch)
+}
+
+func TestGoogleOnlyAccountCanCreateAPasswordLater(t *testing.T) {
+	s, _ := newService(t, true)
+	ctx := context.Background()
+	u, err := s.LoginWithGoogle(ctx, google("g-1", "ana@example.com"))
+	require.NoError(t, err)
+
+	require.NoError(t, s.ChangeOwnPassword(ctx, u.ID, "", strongPassword))
+	_, ok, _ := s.Authenticate(ctx, "ana@example.com", strongPassword)
+	assert.True(t, ok)
+	again, err := s.LoginWithGoogle(ctx, google("g-1", "ana@example.com"))
+	require.NoError(t, err)
+	assert.True(t, again.HasPassword, "signing in with Google again keeps the password")
+}
+
+func TestUsernameChoice(t *testing.T) {
+	s, store := newService(t, true)
+	s.reserved = func(_ context.Context, name string) (bool, error) { return name == "admin" || name == "operator1", nil }
+	ctx := context.Background()
+	u, err := s.LoginWithGoogle(ctx, google("g-1", "ana@example.com"))
+	require.NoError(t, err)
+	require.True(t, u.NeedsUsername)
+
+	for name, want := range map[string]error{
+		"":                ErrUsername,
+		"ab":              ErrUsername,
+		"1ana":            ErrUsername,
+		"ana lopez":       ErrUsername,
+		"ana@example.com": ErrUsername,
+		"admin":           ErrUsernameTaken,
+		"operator1":       ErrUsernameTaken,
+	} {
+		_, err := s.SetUsername(ctx, u.ID, name)
+		assert.ErrorIs(t, err, want, "%q", name)
+	}
+
+	chosen, err := s.SetUsername(ctx, u.ID, "  Ana.Lopez ")
+	require.NoError(t, err)
+	assert.Equal(t, "ana.lopez", chosen.Username)
+	assert.False(t, chosen.NeedsUsername)
+	assert.Equal(t, "ana@example.com", chosen.Email, "the email is always kept")
+	assert.Contains(t, store.Actions(), config.ActionClientUsernameChanged)
+
+	// Password sign-in works with the new username and with the email.
+	require.NoError(t, s.ChangeOwnPassword(ctx, u.ID, "", strongPassword))
+	for _, login := range []string{"ana.lopez", "ANA.LOPEZ", "ana@example.com"} {
+		got, ok, err := s.Authenticate(ctx, login, strongPassword)
+		require.NoError(t, err, login)
+		assert.True(t, ok, login)
+		assert.Equal(t, u.ID, got.ID)
+	}
+
+	other, err := s.Register(ctx, form("bea@example.com"))
+	require.NoError(t, err)
+	_, err = s.SetUsername(ctx, other.ID, "ana.lopez")
+	assert.ErrorIs(t, err, ErrUsernameTaken, "usernames are unique")
+	_, err = s.SetUsername(ctx, 9999, "nobody")
+	assert.ErrorIs(t, err, model.ErrNotFound)
+}
+
+func TestSetFullName(t *testing.T) {
+	s, _ := newService(t, true)
+	ctx := context.Background()
+	u, err := s.Register(ctx, form("ana@example.com"))
+	require.NoError(t, err)
+
+	got, err := s.SetFullName(ctx, u.ID, "  Ana   María  López ")
+	require.NoError(t, err)
+	assert.Equal(t, "Ana María López", got.FullName)
+	_, err = s.SetFullName(ctx, u.ID, "A")
+	assert.ErrorIs(t, err, ErrFullName)
 }
 
 func TestListAndSetExpiry(t *testing.T) {

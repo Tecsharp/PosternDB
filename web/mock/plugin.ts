@@ -132,6 +132,7 @@ type ClientRow = {
   fullName?: string
   googleLinked: boolean
   hasPassword: boolean
+  needsUsername?: boolean
   neverExpires: boolean
   maxIdleDays?: number
   createdAt: string
@@ -143,6 +144,17 @@ type ClientRow = {
 let clients: ClientRow[] = [{ id: 1, username: 'ana@ejemplo.com', email: 'ana@ejemplo.com', fullName: 'Ana López', googleLinked: false, hasPassword: true, neverExpires: false, createdAt: iso(-20), createdBy: '', updatedAt: iso(-20), databaseCount: 1, lastLoginAt: iso(-0.5) }]
 let nextClientId = 2
 
+let myBackups = [
+  { id: 101, kind: 'dump', status: 'done', slug: 'ana-tienda', file: 'pdb_ana_tienda_20261101.dump', bytes: 48_128, reason: 'manual', requestedBy: 'ana@ejemplo.com', createdAt: iso(-1) },
+  { id: 102, kind: 'dump', status: 'done', slug: 'ana-tienda', file: 'pdb_ana_tienda_20261020.dump', bytes: 41_984, reason: 'manual', requestedBy: 'ana@ejemplo.com', createdAt: iso(-13) },
+]
+const myActivity = [
+  { id: 9, occurredAt: iso(-0.02), actor: 'ana@ejemplo.com', action: 'backup_requested', target: 'ana-tienda', details: { file: 'pdb_ana_tienda_20261101.dump' } },
+  { id: 8, occurredAt: iso(-0.5), actor: 'ana@ejemplo.com', action: 'login_success', target: '', details: { ip: '189.203.10.4' } },
+  { id: 7, occurredAt: iso(-3), actor: 'administrador', action: 'client_password_reset', target: 'ana@ejemplo.com' },
+  { id: 6, occurredAt: iso(-5), actor: 'ana@ejemplo.com', action: 'db_created', target: 'ana-tienda', details: { hostname: 'postern-ana-tienda.pachislab.com' } },
+  { id: 5, occurredAt: iso(-20), actor: 'ana@ejemplo.com', action: 'client_registered', target: 'ana@ejemplo.com', details: { method: 'password' } },
+]
 let loggedIn = false
 let currentRole: 'owner' | 'client' = 'owner'
 let currentClientId = 0
@@ -191,12 +203,12 @@ export function mockApi(): Plugin {
           }
           return send(res, 401, { error: 'usuario o contraseña incorrectos' })
         }
-        if (path === '/auth/config') return send(res, 200, { allowSelfRegister: settings.allowSelfRegister, googleEnabled: true })
+        if (path === '/auth/config') return send(res, 200, { allowSelfRegister: settings.allowSelfRegister, googleEnabled: true, passwordEnabled: true })
         if (path === '/auth/google/start') {
           // Stand-in for Google: signs in a Google-only account and goes back to the panel.
           let g = clients.find((c) => c.email === 'laura@gmail.com')
           if (!g) {
-            g = { id: nextClientId++, username: 'laura@gmail.com', email: 'laura@gmail.com', fullName: 'Laura Gómez', googleLinked: true, hasPassword: false, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
+            g = { id: nextClientId++, username: 'laura@gmail.com', email: 'laura@gmail.com', fullName: 'Laura Gómez', googleLinked: true, hasPassword: false, needsUsername: true, neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
             clients = [...clients, g]
           }
           loggedIn = true
@@ -230,7 +242,7 @@ export function mockApi(): Plugin {
         if (path === '/auth/session') {
           if (currentRole === 'client') {
             const c = clients.find((x) => x.id === currentClientId)
-            return send(res, 200, { user: c?.username ?? 'cliente', role: 'client', bootstrap: false, email: c?.email, fullName: c?.fullName, hasPassword: c?.hasPassword ?? true })
+            return send(res, 200, { user: c?.username ?? 'cliente', role: 'client', bootstrap: false, email: c?.email, fullName: c?.fullName, hasPassword: c?.hasPassword ?? true, needsUsername: c?.needsUsername ?? false, googleLinked: c?.googleLinked ?? false })
           }
           return send(res, 200, { user: 'admin', role: 'owner', bootstrap: true })
         }
@@ -296,6 +308,55 @@ export function mockApi(): Plugin {
           }
         }
         if (path === '/me/templates') return send(res, 200, { templates: templates.filter((t) => t.shared) })
+        if (path === '/me/account') {
+          const c = clients.find((x) => x.id === currentClientId)
+          if (!c) return send(res, 404, { error: 'no encontrado' })
+          if (m === 'PATCH') {
+            const { username, fullName } = (await readJSON(req)) as { username?: string; fullName?: string }
+            if (username !== undefined) {
+              const name = String(username).trim().toLowerCase()
+              if (!/^[a-z][a-z0-9._-]{2,31}$/.test(name)) return send(res, 400, { error: 'el usuario debe empezar con una letra y tener de 3 a 32 caracteres: a-z, 0-9, punto, guion o guion bajo' })
+              if (name === 'admin' || clients.some((x) => x.id !== c.id && x.username === name)) return send(res, 409, { error: 'ese nombre de usuario ya está en uso' })
+              c.username = name
+              c.needsUsername = false
+            }
+            if (fullName !== undefined) {
+              if (String(fullName).trim().length < 2) return send(res, 400, { error: 'escribe tu nombre completo (de 2 a 80 caracteres)' })
+              c.fullName = String(fullName).trim()
+            }
+          }
+          const count = databases.filter((d) => d.clientUserId === c.id).length
+          return send(res, 200, { username: c.username, email: c.email ?? '', fullName: c.fullName ?? '', googleLinked: c.googleLinked, hasPassword: c.hasPassword, needsUsername: c.needsUsername ?? false, createdAt: c.createdAt, maxDatabases: settings.maxDatabasesPerClient, databaseCount: count })
+        }
+        if (path === '/me/google/link') {
+          const c = clients.find((x) => x.id === currentClientId)
+          if (c) c.googleLinked = true
+          res.statusCode = 302
+          res.setHeader('Location', '/seguridad?google=linked')
+          return res.end()
+        }
+        if (path === '/me/activity') return send(res, 200, { entries: myActivity })
+        if (path === '/me/backups' && m === 'GET') return send(res, 200, { backups: myBackups })
+        if (parts[0] === 'me' && parts[1] === 'backups' && parts[2]) {
+          const id = Number(parts[2])
+          const job = myBackups.find((j) => j.id === id)
+          if (!job) return send(res, 404, { error: 'no encontrado' })
+          if (parts[3] === 'download') {
+            res.setHeader('Content-Type', 'application/octet-stream')
+            res.setHeader('Content-Disposition', `attachment; filename="${job.file}"`)
+            return res.end('mock backup')
+          }
+          if (parts[3] === 'restore') {
+            const { name } = await readJSON(req)
+            const row = mk(nextId++, String(name), 0, 0, 'activa', { clientUserId: currentClientId })
+            databases = [row, ...databases]
+            return send(res, 201, creds(row))
+          }
+          if (m === 'DELETE') {
+            myBackups = myBackups.filter((j) => j.id !== id)
+            return send(res, 204)
+          }
+        }
         if (parts[0] === 'me' && parts[1] === 'databases') {
           const mine = () => databases.filter((d) => d.clientUserId === currentClientId)
           if (!parts[2] && m === 'GET') return send(res, 200, { databases: mine() })
@@ -316,6 +377,13 @@ export function mockApi(): Plugin {
           }
           if (sub === 'connection') return send(res, 200, { ...creds(row), password: undefined })
           if (sub === 'password') return send(res, 200, creds(row))
+          if (sub === 'backups' && m === 'POST') {
+            if (myBackups.filter((j) => j.slug === row.slug).length >= 5) return send(res, 403, { error: 'ya tienes el máximo de respaldos de esta base: elimina uno para crear otro' })
+            const job = { id: nextId++, kind: 'dump', status: 'pending', slug: row.slug, file: `pdb_${String(row.slug).replace(/-/g, '_')}_${Date.now()}.dump`, bytes: 52_224, reason: 'manual', requestedBy: 'ana@ejemplo.com', createdAt: new Date().toISOString() }
+            // The real sidecar finishes a few seconds later.
+            setTimeout(() => myBackups.unshift({ ...job, status: 'done' }), 3000)
+            return send(res, 202, job)
+          }
           if (sub === 'live-connections') return send(res, 200, { connections: liveConnections })
           if (sub === 'stats') return send(res, 200, stats)
           if (sub === 'schema') return send(res, 200, row.slug === 'taller-motos' || row.slug === 'ana-tienda' ? schema : { schemas: [], tables: [] })

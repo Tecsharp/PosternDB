@@ -15,8 +15,10 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strconv"
@@ -84,6 +86,9 @@ type Authenticator struct {
 	now           func() time.Time
 	admins        AdminStore
 	clients       ClientStore
+	// clientPasswords is false when AUTH_MODE=google: registered users then
+	// have no password login at all (administrators still do).
+	clientPasswords bool
 }
 
 // New builds an Authenticator from the configured bootstrap credentials.
@@ -98,7 +103,34 @@ func New(user, password, secret string, ttl time.Duration, admins AdminStore, cl
 		now:           time.Now,
 		admins:        admins,
 		clients:       clients,
+
+		clientPasswords: true,
 	}
+}
+
+// SetClientPasswordLogin turns password login for registered users on or off.
+func (a *Authenticator) SetClientPasswordLogin(enabled bool) { a.clientPasswords = enabled }
+
+// SessionTTL is how long a new session lasts: the normal lifetime, or the
+// long one when the person asked to be remembered.
+func (a *Authenticator) SessionTTL(remember bool) time.Duration {
+	if remember {
+		return config.RememberTTL
+	}
+	return a.ttl
+}
+
+// MAC signs data with the session secret, so values that travel through the
+// browser (the OAuth cookie) cannot be forged.
+func (a *Authenticator) MAC(data string) string {
+	m := hmac.New(sha256.New, a.secret)
+	m.Write([]byte(data))
+	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+}
+
+// CheckMAC verifies a value signed by MAC, in constant time.
+func (a *Authenticator) CheckMAC(data, mac string) bool {
+	return hmac.Equal([]byte(a.MAC(data)), []byte(mac))
 }
 
 // IsBootstrap reports whether username is the .env owner.
@@ -124,7 +156,7 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (I
 			return Identity{Username: username, Role: role}, true, nil
 		}
 	}
-	if a.clients != nil {
+	if a.clients != nil && a.clientPasswords {
 		u, ok, err := a.clients.Authenticate(ctx, username, password)
 		if err != nil {
 			return Identity{}, false, err
@@ -152,8 +184,13 @@ func (a *Authenticator) CheckCredentials(user, password string) bool {
 // the token: it is resolved on every request so demoting or deleting an
 // administrator or client takes effect immediately.
 func (a *Authenticator) Issue(subject string) (string, time.Time, error) {
+	return a.IssueFor(subject, a.ttl)
+}
+
+// IssueFor is Issue with an explicit lifetime.
+func (a *Authenticator) IssueFor(subject string, ttl time.Duration) (string, time.Time, error) {
 	now := a.now()
-	exp := now.Add(a.ttl)
+	exp := now.Add(ttl)
 	claims := jwt.RegisteredClaims{
 		Issuer:    config.JWTIssuer,
 		Subject:   subject,
@@ -183,21 +220,26 @@ func (a *Authenticator) Verify(token string) (string, error) {
 // SetSessionCookie writes the session cookie. HttpOnly keeps it away from
 // JavaScript (XSS cannot steal it), Secure because the panel is only served
 // over HTTPS through Cloudflare, SameSite=Strict as the first CSRF barrier.
-func SetSessionCookie(w http.ResponseWriter, token string, expires time.Time, secure bool) {
-	http.SetCookie(w, &http.Cookie{
+func SetSessionCookie(w http.ResponseWriter, token string, expires time.Time, persistent, secure bool) {
+	c := &http.Cookie{
 		Name:     config.SessionCookieName,
 		Value:    token,
 		Path:     "/",
-		Expires:  expires,
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
-	})
+	}
+	// Without Expires it is a session cookie: it ends when the browser
+	// closes. "Recordarme" makes it persistent.
+	if persistent {
+		c.Expires = expires
+	}
+	http.SetCookie(w, c)
 }
 
 // ClearSessionCookie expires the session cookie.
 func ClearSessionCookie(w http.ResponseWriter, secure bool) {
-	SetSessionCookie(w, "", time.Unix(0, 0), secure)
+	SetSessionCookie(w, "", time.Unix(0, 0), true, secure)
 }
 
 // Middleware rejects requests without a valid session and stores the

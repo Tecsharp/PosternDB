@@ -34,6 +34,7 @@ const (
 	EnvLocalDBPort           = "LOCAL_DB_PORT"
 	EnvBackupDir             = "BACKUP_DIR"
 	EnvAllowSelfRegister     = "ALLOW_SELF_REGISTER"
+	EnvAuthMode              = "AUTH_MODE"
 	EnvGoogleClientID        = "GOOGLE_CLIENT_ID"
 	EnvGoogleClientSecret    = "GOOGLE_CLIENT_SECRET"
 	EnvGoogleRedirectURL     = "GOOGLE_REDIRECT_URL"
@@ -69,6 +70,9 @@ const (
 	DefaultSMTPPort           = 587
 	LocalHostname             = "localhost"
 	DefaultAllowSelfRegister  = true
+	AuthModePassword          = "password"
+	AuthModeGoogle            = "google"
+	AuthModeBoth              = "both"
 	DefaultPanelLocalPort     = 28437
 	DefaultMaxDBsPerClient    = 3
 	MinClientPasswordLength   = 12
@@ -126,7 +130,14 @@ const (
 	MaxTemplateSQL   = 200000
 	// MaxConnectionQueryChars truncates the running statement shown in the live connections list.
 	MaxConnectionQueryChars = 160
-	ExtraUserSep            = "__"
+	// MaxClientBackupsPerDatabase caps manual backups a registered user can
+	// keep per database, so nobody can fill the disk.
+	MaxClientBackupsPerDatabase = 5
+	// ClientActivityScan is how many recent audit entries are searched for a
+	// user's own activity, and ClientActivityShown how many are returned.
+	ClientActivityScan  = 500
+	ClientActivityShown = 100
+	ExtraUserSep        = "__"
 )
 
 // Client database lifecycle states as stored in the metadata table.
@@ -188,6 +199,7 @@ const (
 	ActionClientPasswordChanged = "client_password_changed"
 	ActionClientPasswordReset   = "client_password_reset"
 	ActionClientGoogleLinked    = "client_google_linked"
+	ActionClientUsernameChanged = "client_username_changed"
 )
 
 // Audit actor names.
@@ -274,6 +286,14 @@ const (
 	RouteMyStats           = "/me/databases/{slug}/stats"
 	RouteMyLiveConnections = "/me/databases/{slug}/live-connections"
 	RouteMyTemplates       = "/me/templates"
+	RouteMyAccount         = "/me/account"
+	RouteMyGoogleLink      = "/me/google/link"
+	RouteMyActivity        = "/me/activity"
+	RouteMyBackups         = "/me/backups"
+	RouteMyDBBackups       = "/me/databases/{slug}/backups"
+	RouteMyBackup          = "/me/backups/{id}"
+	RouteMyBackupFile      = "/me/backups/{id}/download"
+	RouteMyBackupRestore   = "/me/backups/{id}/restore"
 	RouteMySchema          = "/me/databases/{slug}/schema"
 	RouteMyDBPassword      = "/me/databases/{slug}/password"
 	RouteMyTableData       = "/me/databases/{slug}/tables/{schema}/{table}/data"
@@ -285,9 +305,11 @@ const (
 	SessionCookieName = "posterndb_session"
 	// OAuthCookieName carries state/nonce/PKCE verifier between the Google
 	// redirect and its callback; scoped to OAuthCookiePath only.
-	OAuthCookieName     = "posterndb_oauth"
-	OAuthCookiePath     = "/api/auth/google"
-	SessionTTL          = 12 * time.Hour
+	OAuthCookieName = "posterndb_oauth"
+	OAuthCookiePath = "/api/auth/google"
+	SessionTTL      = 12 * time.Hour
+	// RememberTTL is how long "Recordarme" keeps a session open.
+	RememberTTL         = 30 * 24 * time.Hour
 	HeaderContentType   = "Content-Type"
 	HeaderCFConnectIP   = "CF-Connecting-IP"
 	HeaderRequestedWith = "X-Requested-With"

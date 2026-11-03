@@ -29,6 +29,13 @@ export function ConnectTab({ db }: TabProps) {
         </Panel>
         <Notice tone="info">
           La contraseña solo se muestra al crear la base. Si la perdiste, genera una nueva en <strong>Ajustes</strong> sin tocar los datos.
+          {!info.localMode && (
+            <span className="mt-1.5 block">
+              <a className="text-accent-text hover:underline" href={`/ayuda?host=${encodeURIComponent(info.hostname)}`} target="_blank" rel="noopener noreferrer">
+                Ver tutorial: cómo abrir el puente con cloudflared
+              </a>
+            </span>
+          )}
         </Notice>
         <nav aria-label="Fragmentos" className="group-box p-1.5">
           <ul>

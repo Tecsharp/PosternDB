@@ -96,7 +96,8 @@ func TestGoogleLoginCreatesAClientSession(t *testing.T) {
 	e := newEnvWith(t, nil, g)
 	c, state := startGoogle(t, e)
 	parts := strings.Split(c.Value, ".")
-	require.Len(t, parts, 3)
+	require.Len(t, parts, 7, "state.nonce.verifier.mode.user.remember.signature")
+	assert.Equal(t, "login", parts[3])
 
 	rec := get(t, e, "/api/auth/google/callback?code=abc&state="+url.QueryEscape(state), c)
 	require.Equal(t, http.StatusFound, rec.Code)
@@ -122,7 +123,9 @@ func TestGoogleLoginCreatesAClientSession(t *testing.T) {
 	assert.Equal(t, http.StatusOK, get(t, e, "/api/me/databases", session).Code)
 }
 
-func TestGoogleLinksAnExistingPasswordAccount(t *testing.T) {
+// Owning the email is not enough to enter an account someone registered with a
+// password: it has to be linked from inside, in Seguridad.
+func TestGoogleDoesNotEnterAnExistingPasswordAccount(t *testing.T) {
 	g := &fakeGoogle{profile: ana()}
 	e := newEnvWith(t, nil, g)
 	rec := e.do(t, http.MethodPost, "/api/auth/register", req{body: registerBody("ana@example.com", "Ana López")})
@@ -130,14 +133,12 @@ func TestGoogleLinksAnExistingPasswordAccount(t *testing.T) {
 
 	c, state := startGoogle(t, e)
 	out := get(t, e, "/api/auth/google/callback?code=abc&state="+url.QueryEscape(state), c)
-	require.Equal(t, "/", out.Header().Get("Location"))
+	assert.Equal(t, "/?oauth=notlinked", out.Header().Get("Location"))
+	assert.Nil(t, cookieNamed(out, config.SessionCookieName), "no session for an unlinked account")
 
-	assert.Equal(t, http.StatusUnauthorized, e.do(t, http.MethodPost, "/api/auth/login",
+	assert.Equal(t, http.StatusOK, e.do(t, http.MethodPost, "/api/auth/login",
 		req{body: `{"username":"ana@example.com","password":"a-long-enough-password"}`}).Code,
-		"the password typed before the email was proven no longer works")
-	session := cookieNamed(out, config.SessionCookieName)
-	require.NotNil(t, session)
-	assert.Equal(t, http.StatusOK, get(t, e, "/api/auth/session", session).Code)
+		"the owner's password still works, nothing was taken over")
 }
 
 func TestGoogleCallbackRejectsBadRequests(t *testing.T) {

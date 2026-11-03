@@ -766,7 +766,7 @@ func (m *FakeMetadata) CreateClientUser(_ context.Context, n model.NewClientUser
 	}
 	m.nextUserID++
 	u := model.ClientUser{ID: m.nextUserID, Username: n.Username, Email: n.Email, FullName: n.FullName,
-		PasswordHash: n.PasswordHash, GoogleSub: n.GoogleSub, CreatedBy: n.CreatedBy}
+		PasswordHash: n.PasswordHash, GoogleSub: n.GoogleSub, CreatedBy: n.CreatedBy, NeedsUsername: n.NeedsUsername}
 	if n.EmailVerified {
 		now := time.Now()
 		u.EmailVerifiedAt = &now
@@ -801,21 +801,44 @@ func (m *FakeMetadata) GetClientUserByGoogleSub(_ context.Context, sub string) (
 }
 
 // LinkClientGoogle ties an account to a Google identity.
-func (m *FakeMetadata) LinkClientGoogle(_ context.Context, id int64, sub, fullName string, resetPassword bool) (model.ClientUser, error) {
+func (m *FakeMetadata) LinkClientGoogle(_ context.Context, id int64, sub string, verifyEmail bool) (model.ClientUser, error) {
 	var out model.ClientUser
 	err := m.clientUser(id, func(u *model.ClientUser) {
 		u.GoogleSub = sub
-		if u.EmailVerifiedAt == nil {
+		if verifyEmail && u.EmailVerifiedAt == nil {
 			now := time.Now()
 			u.EmailVerifiedAt = &now
 		}
-		if u.FullName == "" {
-			u.FullName = fullName
-		}
-		if resetPassword {
-			u.PasswordHash = ""
-		}
 		u.Derive()
+		out = *u
+	})
+	return out, err
+}
+
+// SetClientUsername stores a chosen username.
+func (m *FakeMetadata) SetClientUsername(_ context.Context, id int64, username string) (model.ClientUser, error) {
+	m.mu.Lock()
+	for _, other := range m.ClientUsers {
+		if other.ID != id && other.Username == username {
+			m.mu.Unlock()
+			return model.ClientUser{}, model.ErrConflict
+		}
+	}
+	m.mu.Unlock()
+	var out model.ClientUser
+	err := m.clientUser(id, func(u *model.ClientUser) {
+		u.Username = username
+		u.NeedsUsername = false
+		out = *u
+	})
+	return out, err
+}
+
+// SetClientFullName stores the full name.
+func (m *FakeMetadata) SetClientFullName(_ context.Context, id int64, fullName string) (model.ClientUser, error) {
+	var out model.ClientUser
+	err := m.clientUser(id, func(u *model.ClientUser) {
+		u.FullName = fullName
 		out = *u
 	})
 	return out, err

@@ -6,10 +6,12 @@ import { ActiveConnections } from '../../components/ActiveConnections'
 import { CredentialsSheet } from '../../components/CredentialsSheet'
 import { formatBytes, formatDate, formatDateTime, formatRelative } from '../../format'
 import { href, linkHandler, navigate, type MyDatabaseTab } from '../../router'
+import { SchemaExplorer } from '../db/SchemaTab'
 
 const tabs: { id: MyDatabaseTab; label: string }[] = [
   { id: 'resumen', label: 'Resumen' },
   { id: 'datos', label: 'Datos' },
+  { id: 'esquema', label: 'Esquema' },
   { id: 'conexion', label: 'Conexión' },
   { id: 'ajustes', label: 'Ajustes' },
 ]
@@ -61,6 +63,7 @@ export function MyDatabaseDetail({ slug, tab }: { slug: string; tab: MyDatabaseT
 
         {current === 'resumen' && <ResumenTab db={db} />}
         {current === 'datos' && <DatosTab slug={db.slug} />}
+        {current === 'esquema' && <SchemaExplorer slug={db.slug} source={{ load: () => me.schema(db.slug), count: (schema, table) => me.count(db.slug, schema, table) }} />}
         {current === 'conexion' && <ConexionTab slug={db.slug} />}
         {current === 'ajustes' && <AjustesTab db={db} onChanged={reload} />}
       </PageBody>
@@ -115,7 +118,12 @@ function ConexionTab({ slug }: { slug: string }) {
           ['Usuario', <span className="font-mono">{info.username}</span>],
         ]}
       />
-      <p className="px-5 pb-4 text-[0.85rem] text-ink-2">La contraseña no se guarda: genera una nueva en Ajustes si la perdiste.</p>
+      <p className="px-5 pb-2 text-[0.85rem] text-ink-2">La contraseña no se guarda: genera una nueva en Ajustes si la perdiste.</p>
+      <p className="px-5 pb-4 text-[0.9rem]">
+        <a className="text-accent-text hover:underline" href={`/ayuda?host=${encodeURIComponent(info.hostname)}`} target="_blank" rel="noopener noreferrer">
+          Ver tutorial: cómo abrir el puente con cloudflared
+        </a>
+      </p>
     </Panel>
   )
 }

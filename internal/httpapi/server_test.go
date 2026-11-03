@@ -58,6 +58,13 @@ func newEnv(t *testing.T, health error) env {
 
 func newEnvWith(t *testing.T, health error, google GoogleAuth) env {
 	t.Helper()
+	return newEnvFull(t, health, google, config.AuthModeBoth)
+}
+
+// newEnvFull also picks AUTH_MODE: in google mode registered users have no
+// password login at all.
+func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string) env {
+	t.Helper()
 	e := env{
 		meta:     testsupport.NewFakeMetadata(),
 		cluster:  testsupport.NewFakeCluster(),
@@ -72,6 +79,7 @@ func newEnvWith(t *testing.T, health error, google GoogleAuth) env {
 	adminSvc := admins.New(e.meta, testsupport.FakeSecrets{}, adminUser)
 	clientSvc := clients.New(e.meta, testsupport.FakeSecrets{}, true)
 	e.auth = auth.New(adminUser, adminPass, strings.Repeat("k", 32), time.Hour, adminSvc, clientSvc)
+	e.auth.SetClientPasswordLogin(mode != config.AuthModeGoogle)
 	svc := provision.New(e.meta, e.cluster, e.cf, e.insp, testsupport.FakeSecrets{}, provision.Options{
 		Resolver:           naming.Resolver{BaseDomain: "pachislab.com", HostPrefix: "postern-", PanelHostname: "postern.pachislab.com"},
 		Policy:             expiry.Policy{MaxIdle: 30 * 24 * time.Hour, WarnBefore: 7 * 24 * time.Hour},
@@ -91,7 +99,7 @@ func newEnvWith(t *testing.T, health error, google GoogleAuth) env {
 		Audit:     e.meta,
 		Health:    pinger{err: health},
 		Notifier:  e.notifier,
-		Settings:  Settings{BaseDomain: "pachislab.com", ExampleHostname: "postern-cliente1.pachislab.com", ExpirationDays: 30, AllowSelfRegister: true, MaxDatabasesPerClient: 3},
+		Settings:  Settings{BaseDomain: "pachislab.com", ExampleHostname: "postern-cliente1.pachislab.com", ExpirationDays: 30, AllowSelfRegister: true, MaxDatabasesPerClient: 3, AuthMode: mode},
 		Static: fstest.MapFS{
 			"index.html":        {Data: []byte("<html>panel</html>")},
 			"assets/app-abc.js": {Data: []byte("console.log(1)")},

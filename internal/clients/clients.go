@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -34,8 +35,14 @@ const (
 	maxNameChars = 80
 )
 
+var usernamePattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{2,31}$`)
+
 // Errors shown to the operator or the registering client.
 var (
+	ErrUsername            = errors.New("el usuario debe empezar con una letra y tener de 3 a 32 caracteres: a-z, 0-9, punto, guion o guion bajo")
+	ErrUsernameTaken       = errors.New("ese nombre de usuario ya está en uso")
+	ErrGoogleNotLinked     = errors.New("esa cuenta ya existe y no tiene Google vinculado")
+	ErrGoogleTaken         = errors.New("esa cuenta de Google ya está vinculada a otro usuario")
 	ErrEmail               = errors.New("escribe un correo válido")
 	ErrFullName            = fmt.Errorf("escribe tu nombre completo (de %d a %d caracteres)", minNameChars, maxNameChars)
 	ErrEmailUseNotAccepted = errors.New("debes aceptar cómo usaremos tu correo para crear la cuenta")
@@ -55,7 +62,9 @@ type Store interface {
 	GetClientUserByEmail(ctx context.Context, email string) (model.ClientUser, error)
 	GetClientUserByGoogleSub(ctx context.Context, sub string) (model.ClientUser, error)
 	CreateClientUser(ctx context.Context, n model.NewClientUser) (model.ClientUser, error)
-	LinkClientGoogle(ctx context.Context, id int64, sub, fullName string, resetPassword bool) (model.ClientUser, error)
+	LinkClientGoogle(ctx context.Context, id int64, sub string, verifyEmail bool) (model.ClientUser, error)
+	SetClientUsername(ctx context.Context, id int64, username string) (model.ClientUser, error)
+	SetClientFullName(ctx context.Context, id int64, fullName string) (model.ClientUser, error)
 	UpdateClientUserPassword(ctx context.Context, id int64, hash string) error
 	TouchClientUserLogin(ctx context.Context, id int64, at time.Time) error
 	SetClientUserExpiry(ctx context.Context, id int64, never bool, maxIdleDays *int, actor string) (model.ClientUser, error)
@@ -77,12 +86,27 @@ type Service struct {
 	cost          int
 	// dummyHash keeps login timing identical for unknown accounts.
 	dummyHash []byte
+	// reserved reports names that belong to the owner or an administrator,
+	// which a client may not take as a username.
+	reserved func(ctx context.Context, name string) (bool, error)
+}
+
+// Option customises the service.
+type Option func(*Service)
+
+// WithReservedNames rejects usernames already used by administrators.
+func WithReservedNames(fn func(ctx context.Context, name string) (bool, error)) Option {
+	return func(s *Service) { s.reserved = fn }
 }
 
 // New builds the service.
-func New(store Store, passwords Passwords, allowRegister bool) *Service {
+func New(store Store, passwords Passwords, allowRegister bool, opts ...Option) *Service {
 	dummy, _ := bcrypt.GenerateFromPassword([]byte("timing-equaliser"), bcryptCost)
-	return &Service{store: store, passwords: passwords, allowRegister: allowRegister, now: time.Now, cost: bcryptCost, dummyHash: dummy}
+	s := &Service{store: store, passwords: passwords, allowRegister: allowRegister, now: time.Now, cost: bcryptCost, dummyHash: dummy}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // RegisterInput is the public sign-up form.
@@ -188,7 +212,7 @@ func emailTaken(err error) error {
 // on success, touches their last-login timestamp. Accounts that only use
 // Google have no password and never pass here.
 func (s *Service) Authenticate(ctx context.Context, login, password string) (model.ClientUser, bool, error) {
-	u, err := s.store.GetClientUserByUsername(ctx, strings.ToLower(strings.TrimSpace(login)))
+	u, err := s.findByLogin(ctx, strings.ToLower(strings.TrimSpace(login)))
 	if errors.Is(err, model.ErrNotFound) {
 		_ = bcrypt.CompareHashAndPassword(s.dummyHash, []byte(password))
 		return model.ClientUser{}, false, nil
@@ -207,15 +231,26 @@ func (s *Service) Authenticate(ctx context.Context, login, password string) (mod
 	return u, true, nil
 }
 
-// LoginWithGoogle resolves the account for a Google identity, linking or
-// creating it as needed:
+// findByLogin accepts the username or the email: they differ once the person
+// picks a username.
+func (s *Service) findByLogin(ctx context.Context, login string) (model.ClientUser, error) {
+	u, err := s.store.GetClientUserByUsername(ctx, login)
+	if errors.Is(err, model.ErrNotFound) && strings.Contains(login, "@") {
+		return s.store.GetClientUserByEmail(ctx, login)
+	}
+	return u, err
+}
+
+// LoginWithGoogle resolves the account for a Google identity:
 //
 //  1. already linked to this Google account: sign in;
-//  2. same email already registered: link it. If that email had never been
-//     verified (it was typed into the sign-up form by whoever got there
-//     first), the password is removed, so a squatter cannot keep access to
-//     an account its real owner just proved with Google;
-//  3. otherwise create an account, when self-registration is allowed.
+//  2. the email belongs to an account that never linked Google: refused. Google
+//     proves the email, but the account may have been created by someone else
+//     with a password, so linking is only possible from inside that account
+//     (see LinkGoogle). This is what stops an unverified signup from handing
+//     its data to whoever merely owns the address;
+//  3. otherwise create a new account (when sign-up is open) that must pick a
+//     username on first entry.
 func (s *Service) LoginWithGoogle(ctx context.Context, g oauth.Profile) (model.ClientUser, error) {
 	if !g.EmailVerified || g.Subject == "" {
 		return model.ClientUser{}, ErrGoogleUnverified
@@ -231,11 +266,12 @@ func (s *Service) LoginWithGoogle(ctx context.Context, g oauth.Profile) (model.C
 	if !errors.Is(err, model.ErrNotFound) {
 		return model.ClientUser{}, err
 	}
-	existing, err := s.store.GetClientUserByEmail(ctx, email)
-	switch {
-	case err == nil:
-		return s.linkGoogle(ctx, existing, g)
-	case !errors.Is(err, model.ErrNotFound):
+	if existing, err := s.store.GetClientUserByEmail(ctx, email); err == nil {
+		if existing.GoogleSub != "" {
+			return model.ClientUser{}, ErrGoogleMismatch
+		}
+		return model.ClientUser{}, ErrGoogleNotLinked
+	} else if !errors.Is(err, model.ErrNotFound) {
 		return model.ClientUser{}, err
 	}
 	if !s.allowRegister {
@@ -247,7 +283,7 @@ func (s *Service) LoginWithGoogle(ctx context.Context, g oauth.Profile) (model.C
 	}
 	created, err := s.store.CreateClientUser(ctx, model.NewClientUser{
 		Username: email, Email: email, FullName: truncate(name, maxNameChars), GoogleSub: g.Subject,
-		EmailVerified: true, EmailUseAccepted: true,
+		EmailVerified: true, EmailUseAccepted: true, NeedsUsername: true,
 	})
 	if err != nil {
 		return created, emailTaken(err)
@@ -256,17 +292,73 @@ func (s *Service) LoginWithGoogle(ctx context.Context, g oauth.Profile) (model.C
 	return s.touch(ctx, created), nil
 }
 
-func (s *Service) linkGoogle(ctx context.Context, existing model.ClientUser, g oauth.Profile) (model.ClientUser, error) {
-	if existing.GoogleSub != "" && existing.GoogleSub != g.Subject {
+// LinkGoogle ties a Google account to an existing user, who is already signed
+// in. Their email is marked as verified only when Google vouched for it.
+func (s *Service) LinkGoogle(ctx context.Context, id int64, g oauth.Profile) (model.ClientUser, error) {
+	if !g.EmailVerified || g.Subject == "" {
+		return model.ClientUser{}, ErrGoogleUnverified
+	}
+	u, err := s.store.GetClientUser(ctx, id)
+	if err != nil {
+		return u, err
+	}
+	if u.GoogleSub != "" {
+		if u.GoogleSub == g.Subject {
+			return u, nil
+		}
 		return model.ClientUser{}, ErrGoogleMismatch
 	}
-	resetPassword := existing.HasPassword && existing.EmailVerifiedAt == nil
-	linked, err := s.store.LinkClientGoogle(ctx, existing.ID, g.Subject, truncate(strings.Join(strings.Fields(g.Name), " "), maxNameChars), resetPassword)
+	if other, err := s.store.GetClientUserByGoogleSub(ctx, g.Subject); err == nil && other.ID != id {
+		return model.ClientUser{}, ErrGoogleTaken
+	} else if err != nil && !errors.Is(err, model.ErrNotFound) {
+		return model.ClientUser{}, err
+	}
+	linked, err := s.store.LinkClientGoogle(ctx, id, g.Subject, strings.EqualFold(strings.TrimSpace(g.Email), u.Email))
 	if err != nil {
 		return linked, err
 	}
-	s.audit(ctx, linked.Username, config.ActionClientGoogleLinked, linked.Username, map[string]any{"passwordRemoved": resetPassword})
-	return s.touch(ctx, linked), nil
+	s.audit(ctx, linked.Username, config.ActionClientGoogleLinked, linked.Username, map[string]any{"sameEmail": strings.EqualFold(g.Email, u.Email)})
+	return linked, nil
+}
+
+// SetUsername lets a person choose the username they sign in with. It cannot
+// be an administrator's name, and an email address always keeps working too.
+func (s *Service) SetUsername(ctx context.Context, id int64, raw string) (model.ClientUser, error) {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	if !usernamePattern.MatchString(name) {
+		return model.ClientUser{}, ErrUsername
+	}
+	if s.reserved != nil {
+		taken, err := s.reserved(ctx, name)
+		if err != nil {
+			return model.ClientUser{}, err
+		}
+		if taken {
+			return model.ClientUser{}, ErrUsernameTaken
+		}
+	}
+	old, err := s.store.GetClientUser(ctx, id)
+	if err != nil {
+		return old, err
+	}
+	u, err := s.store.SetClientUsername(ctx, id, name)
+	if errors.Is(err, model.ErrConflict) {
+		return u, ErrUsernameTaken
+	}
+	if err != nil {
+		return u, err
+	}
+	s.audit(ctx, name, config.ActionClientUsernameChanged, name, map[string]any{"from": old.Username})
+	return u, nil
+}
+
+// SetFullName lets a person correct their name.
+func (s *Service) SetFullName(ctx context.Context, id int64, raw string) (model.ClientUser, error) {
+	name, err := normalizeName(raw)
+	if err != nil {
+		return model.ClientUser{}, err
+	}
+	return s.store.SetClientFullName(ctx, id, name)
 }
 
 func (s *Service) touch(ctx context.Context, u model.ClientUser) model.ClientUser {

@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 // The diagram pulls in React Flow and dagre; load it only when needed.
 const SchemaDiagram = lazy(() => import('../../components/SchemaDiagram'))
 import { AltArrowDownIcon, AltArrowRightIcon, DiagramDownIcon, EyeIcon, KeyMinimalisticIcon, LinkMinimalistic2Icon, ListIcon, MagnifierIcon, TableIcon } from '@solar-icons/react/linear'
-import { api, can, type Table } from '../../api'
+import { api, can, type QueryResult, type Schema, type Table } from '../../api'
 import { lazy, Suspense } from 'react'
 import { tableKey } from '../../components/schemaKey'
 import { Button, EmptyState, ErrorNote, Loading, Panel, segmentClass, Tag, useAction, useLoad } from '../../components/ui'
@@ -13,8 +13,25 @@ import { ResultGrid } from './ConsoleTab'
 
 type View = 'diagram' | 'tree'
 
+/** Where the explorer gets its data, so admins and registered users share it. */
+export interface SchemaSource {
+  load: () => Promise<Schema>
+  count: (schema: string, table: string) => Promise<number>
+  /** Absent for registered users: they browse rows in the Datos tab. */
+  preview?: (schema: string, table: string) => Promise<QueryResult>
+}
+
 export function SchemaTab({ db, session }: TabProps) {
-  const { data, error, loading, reload } = useLoad(() => api.schema(db.slug), [db.slug])
+  const source: SchemaSource = {
+    load: () => api.schema(db.slug),
+    count: (schema, table) => api.count(db.slug, schema, table),
+    preview: can.operate(session.role) ? (schema, table) => api.preview(db.slug, schema, table) : undefined,
+  }
+  return <SchemaExplorer slug={db.slug} source={source} />
+}
+
+export function SchemaExplorer({ slug, source }: { slug: string; source: SchemaSource }) {
+  const { data, error, loading, reload } = useLoad(source.load, [slug])
   const [view, setView] = useState<View>('diagram')
   const [selected, setSelected] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
@@ -75,7 +92,7 @@ export function SchemaTab({ db, session }: TabProps) {
             <SchemaTree tables={tables} schemas={data.schemas} selected={selected} onSelect={setSelected} />
           )}
         </div>
-        {current && <TableDetail key={tableKey(current)} slug={db.slug} table={current} canRead={can.operate(session.role)} onClose={() => setSelected(null)} />}
+        {current && <TableDetail key={tableKey(current)} table={current} source={source} onClose={() => setSelected(null)} />}
       </div>
     </div>
   )
@@ -153,9 +170,10 @@ function TreeToggle({ open, onClick, label, children }: { open: boolean; onClick
   )
 }
 
-function TableDetail({ slug, table, canRead, onClose }: { slug: string; table: Table; canRead: boolean; onClose: () => void }) {
+function TableDetail({ table, source, onClose }: { table: Table; source: SchemaSource; onClose: () => void }) {
   const [exact, setExact] = useState<number | null>(null)
-  const [preview, setPreview] = useState<Awaited<ReturnType<typeof api.preview>> | null>(null)
+  const [preview, setPreview] = useState<QueryResult | null>(null)
+  const previewRows = source.preview
   const counting = useAction()
   const loadingRows = useAction()
 
@@ -184,7 +202,7 @@ function TableDetail({ slug, table, canRead, onClose }: { slug: string; table: T
             <span className="text-ink-2">{exact === null ? 'registros (estimado)' : 'registros (exacto)'}</span>
           </p>
           {exact === null && (
-            <Button size="sm" disabled={counting.busy} onClick={() => counting.run(() => api.count(slug, table.schema, table.name).then(setExact))}>
+            <Button size="sm" disabled={counting.busy} onClick={() => counting.run(() => source.count(table.schema, table.name).then(setExact))}>
               {counting.busy ? 'Contando…' : 'Contar exacto'}
             </Button>
           )}
@@ -231,10 +249,10 @@ function TableDetail({ slug, table, canRead, onClose }: { slug: string; table: T
           </section>
         )}
 
-        {canRead && (
+        {previewRows && (
           <section>
             {!preview ? (
-              <Button size="sm" disabled={loadingRows.busy} onClick={() => loadingRows.run(() => api.preview(slug, table.schema, table.name).then(setPreview))}>
+              <Button size="sm" disabled={loadingRows.busy} onClick={() => loadingRows.run(() => previewRows(table.schema, table.name).then(setPreview))}>
                 <EyeIcon size={16} aria-hidden />
                 {loadingRows.busy ? 'Cargando…' : 'Ver primeras filas'}
               </Button>

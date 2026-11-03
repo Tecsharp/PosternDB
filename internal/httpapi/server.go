@@ -45,6 +45,7 @@ type Databases interface {
 	Stats(ctx context.Context, slug string) (model.DatabaseStats, error)
 	Connections(ctx context.Context, slug string) ([]model.Connection, error)
 	SharedTemplates(ctx context.Context) ([]model.Template, error)
+	ClientBackups(ctx context.Context, clientUserID int64) ([]model.Job, error)
 	Schema(ctx context.Context, slug string) (model.Schema, error)
 	Query(ctx context.Context, slug, sql, actor string) (model.QueryResult, error)
 	Preview(ctx context.Context, slug, schema, table string) (model.QueryResult, error)
@@ -86,6 +87,9 @@ type Clients interface {
 	Register(ctx context.Context, in clients.RegisterInput) (model.ClientUser, error)
 	Create(ctx context.Context, email, fullName, actor string) (model.ClientUser, string, error)
 	LoginWithGoogle(ctx context.Context, g oauth.Profile) (model.ClientUser, error)
+	LinkGoogle(ctx context.Context, id int64, g oauth.Profile) (model.ClientUser, error)
+	SetUsername(ctx context.Context, id int64, username string) (model.ClientUser, error)
+	SetFullName(ctx context.Context, id int64, fullName string) (model.ClientUser, error)
 	ByID(ctx context.Context, id int64) (model.ClientUser, bool, error)
 	ChangeOwnPassword(ctx context.Context, id int64, current, next string) error
 	ResetPassword(ctx context.Context, id int64, actor string) (string, error)
@@ -131,8 +135,9 @@ type Settings struct {
 	// AllowSelfRegister and MaxDatabasesPerClient tell the frontend whether
 	// to show the public sign-up link and how many databases a client may
 	// create before hitting their quota.
-	AllowSelfRegister     bool `json:"allowSelfRegister"`
-	MaxDatabasesPerClient int  `json:"maxDatabasesPerClient"`
+	AllowSelfRegister     bool   `json:"allowSelfRegister"`
+	MaxDatabasesPerClient int    `json:"maxDatabasesPerClient"`
+	AuthMode              string `json:"authMode"`
 }
 
 // Deps groups everything the server needs.
@@ -260,6 +265,15 @@ func (s *server) clientRoutes(r chi.Router) {
 	r.Get(config.RouteMyStats, s.myStats)
 	r.Get(config.RouteMyLiveConnections, s.myLiveConnections)
 	r.Get(config.RouteMyTemplates, s.myTemplates)
+	r.Get(config.RouteMyAccount, s.myAccount)
+	r.Patch(config.RouteMyAccount, s.updateMyAccount)
+	r.Get(config.RouteMyGoogleLink, s.googleLink)
+	r.Get(config.RouteMyActivity, s.myActivity)
+	r.Get(config.RouteMyBackups, s.myBackups)
+	r.Post(config.RouteMyDBBackups, s.createMyBackup)
+	r.Get(config.RouteMyBackupFile, s.downloadMyBackup)
+	r.Delete(config.RouteMyBackup, s.deleteMyBackup)
+	r.Post(config.RouteMyBackupRestore, s.restoreMyBackup)
 	r.Get(config.RouteMySchema, s.mySchema)
 	r.Post(config.RouteMyDBPassword, s.resetMyPassword)
 	r.Get(config.RouteMyTableData, s.browseMyTable)
@@ -314,7 +328,11 @@ func (s *server) settings(w http.ResponseWriter, r *http.Request) {
 // publicConfig is the only unauthenticated config: the login screen needs to
 // know whether to offer "Crear cuenta".
 func (s *server) publicConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"allowSelfRegister": s.Settings.AllowSelfRegister, "googleEnabled": s.Google != nil})
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"allowSelfRegister": s.Settings.AllowSelfRegister,
+		"googleEnabled":     s.Google != nil,
+		"passwordEnabled":   s.Settings.AuthMode != config.AuthModeGoogle,
+	})
 }
 
 func (s *server) listAudit(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +395,7 @@ func (s *server) domainError(w http.ResponseWriter, op string, err error) {
 		writeError(w, http.StatusBadRequest, invalidInput.Error())
 	case isAdminValidation(err), isClientValidation(err):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, clients.ErrEmailTaken):
+	case errors.Is(err, clients.ErrEmailTaken), errors.Is(err, clients.ErrUsernameTaken):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, model.ErrConflict):
 		writeError(w, http.StatusConflict, "ya existe un elemento con ese nombre")
@@ -389,7 +407,7 @@ func (s *server) domainError(w http.ResponseWriter, op string, err error) {
 }
 
 func isClientValidation(err error) bool {
-	for _, e := range []error{clients.ErrEmail, clients.ErrFullName, clients.ErrEmailUseNotAccepted, clients.ErrWeakPassword, clients.ErrWrongPassword, clients.ErrRegisterDisabled} {
+	for _, e := range []error{clients.ErrEmail, clients.ErrFullName, clients.ErrUsername, clients.ErrEmailUseNotAccepted, clients.ErrWeakPassword, clients.ErrWrongPassword, clients.ErrRegisterDisabled} {
 		if errors.Is(err, e) {
 			return true
 		}

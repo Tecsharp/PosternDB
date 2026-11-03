@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { api, type PublicConfig, type Session } from '../api'
 import { Logo } from '../components/Shell'
-import { Button, ErrorNote, errorMessage } from '../components/ui'
+import { Button, ErrorNote, errorMessage, PasswordInput } from '../components/ui'
 
 const oauthMessages: Record<string, string> = {
   cancelled: 'Cancelaste el acceso con Google. Puedes intentarlo de nuevo.',
@@ -9,6 +9,8 @@ const oauthMessages: Record<string, string> = {
   disabled: 'El registro de cuentas nuevas está desactivado.',
   unverified: 'Google no confirmó que ese correo sea tuyo.',
   mismatch: 'Ese correo ya está vinculado a otra cuenta de Google.',
+  notlinked: 'Ese correo ya tiene una cuenta. Entra con tu contraseña y vincula Google desde Seguridad.',
+  taken: 'Esa cuenta de Google ya está vinculada a otro usuario.',
 }
 
 const EMAIL_USE =
@@ -41,9 +43,11 @@ export function Login({ onLoggedIn }: { onLoggedIn: (s: Session) => void }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [accept, setAccept] = useState(false)
+  const [remember, setRemember] = useState(false)
+  const [adminForm, setAdminForm] = useState(false)
   const [error, setError] = useState(takeOAuthError)
   const [busy, setBusy] = useState(false)
-  const [config, setConfig] = useState<PublicConfig>({ allowSelfRegister: true, googleEnabled: false })
+  const [config, setConfig] = useState<PublicConfig>({ allowSelfRegister: true, googleEnabled: false, passwordEnabled: true })
   const isRegister = mode === 'register'
 
   useEffect(() => {
@@ -53,13 +57,18 @@ export function Login({ onLoggedIn }: { onLoggedIn: (s: Session) => void }) {
       .catch(() => undefined)
   }, [])
 
+  // With AUTH_MODE=google, registered users only use Google; the password form
+  // stays available for the administrator, behind a small link.
+  const showForm = config.passwordEnabled || adminForm
+  const canRegister = config.passwordEnabled && config.allowSelfRegister
+
   async function submit(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError('')
     try {
       if (isRegister) await api.register({ email, fullName, password, acceptEmailUse: accept })
-      else await api.login(login, password)
+      else await api.login(login, password, remember)
       onLoggedIn(await api.session())
     } catch (err) {
       setError(errorMessage(err))
@@ -82,101 +91,120 @@ export function Login({ onLoggedIn }: { onLoggedIn: (s: Session) => void }) {
         </div>
         <form onSubmit={submit} className="group-box px-6 py-6" aria-labelledby="login-title">
           <h1 id="login-title" className="text-[1.15rem] font-semibold">
-            {isRegister ? 'Crear cuenta' : 'Iniciar sesión'}
+            {isRegister ? 'Crear cuenta' : adminForm ? 'Administrador' : 'Iniciar sesión'}
           </h1>
 
-          {config.googleEnabled && (
+          {config.googleEnabled && !adminForm && (
             <>
               <a
-                href="/api/auth/google/start"
+                href={`/api/auth/google/start${remember && !isRegister ? '?remember=1' : ''}`}
                 className="mt-5 inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-[10px] bg-surface-3 text-[0.95rem] font-medium text-ink hover:brightness-110"
               >
                 <GoogleMark />
                 Continuar con Google
               </a>
               {!isRegister && <p className="mt-2 text-center text-[0.8rem] text-ink-3">{EMAIL_USE}</p>}
-              <div className="my-4 flex items-center gap-3 text-[0.82rem] text-ink-3" aria-hidden="true">
-                <span className="h-px flex-1 bg-hairline" />o con tu correo<span className="h-px flex-1 bg-hairline" />
-              </div>
+              {config.passwordEnabled && (
+                <div className="my-4 flex items-center gap-3 text-[0.82rem] text-ink-3" aria-hidden="true">
+                  <span className="h-px flex-1 bg-hairline" />o con tu correo<span className="h-px flex-1 bg-hairline" />
+                </div>
+              )}
             </>
           )}
 
-          <div className={`space-y-4 ${config.googleEnabled ? '' : 'mt-5'}`}>
-            {isRegister ? (
-              <>
+          {showForm && (
+            <div className={`space-y-4 ${config.googleEnabled && config.passwordEnabled && !adminForm ? '' : 'mt-5'}`}>
+              {isRegister ? (
+                <>
+                  <label className="block">
+                    <span className="label">Nombre completo</span>
+                    <input className="field" autoComplete="name" required minLength={2} maxLength={80} value={fullName} onChange={(e) => setFullName(e.target.value)} />
+                  </label>
+                  <label className="block">
+                    <span className="label">Correo</span>
+                    <input className="field" type="email" autoComplete="email" autoCapitalize="none" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} />
+                  </label>
+                </>
+              ) : (
                 <label className="block">
-                  <span className="label">Nombre completo</span>
-                  <input className="field" autoComplete="name" required minLength={2} maxLength={80} value={fullName} onChange={(e) => setFullName(e.target.value)} />
+                  <span className="label">{adminForm ? 'Usuario' : 'Correo o usuario'}</span>
+                  <input
+                    className="field"
+                    autoComplete="username"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    autoFocus
+                    required
+                    value={login}
+                    onChange={(e) => setLogin(e.target.value)}
+                  />
                 </label>
-                <label className="block">
-                  <span className="label">Correo</span>
-                  <input className="field" type="email" autoComplete="email" autoCapitalize="none" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} />
-                </label>
-              </>
-            ) : (
+              )}
               <label className="block">
-                <span className="label">Correo o usuario</span>
-                <input
-                  className="field"
-                  autoComplete="username"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  autoFocus
+                <span className="label">Contraseña</span>
+                <PasswordInput
+                  autoComplete={isRegister ? 'new-password' : 'current-password'}
+                  minLength={isRegister ? 12 : undefined}
                   required
-                  value={login}
-                  onChange={(e) => setLogin(e.target.value)}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
                 />
+                {isRegister && <span className="mt-1.5 block text-[0.85rem] text-ink-2">Mínimo 12 caracteres.</span>}
               </label>
-            )}
-            <label className="block">
-              <span className="label">Contraseña</span>
-              <input
-                className="field"
-                type="password"
-                autoComplete={isRegister ? 'new-password' : 'current-password'}
-                minLength={isRegister ? 12 : undefined}
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              {isRegister && <span className="mt-1.5 block text-[0.85rem] text-ink-2">Mínimo 12 caracteres.</span>}
-            </label>
 
-            {isRegister && (
-              <div className="rounded-[10px] bg-surface-2 px-3.5 py-3">
-                <p className="text-[0.85rem] font-medium">Cómo usaremos tu correo</p>
-                <p className="mt-1 text-[0.85rem] text-ink-2">{EMAIL_USE}</p>
-                <label className="mt-3 flex cursor-pointer items-start gap-2.5 text-[0.9rem] font-normal text-ink">
-                  <input type="checkbox" className="mt-1 accent-[var(--accent)]" required checked={accept} onChange={(e) => setAccept(e.target.checked)} />
-                  Entiendo y acepto cómo se usará mi correo
+              {!isRegister && (
+                <label className="flex cursor-pointer items-center gap-2.5 text-[0.9rem] font-normal text-ink">
+                  <input type="checkbox" className="size-4 accent-[var(--accent)]" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+                  Recordarme
                 </label>
-              </div>
-            )}
-          </div>
+              )}
+
+              {isRegister && (
+                <div className="rounded-[10px] bg-surface-2 px-3.5 py-3">
+                  <p className="text-[0.85rem] font-medium">Cómo usaremos tu correo</p>
+                  <p className="mt-1 text-[0.85rem] text-ink-2">{EMAIL_USE}</p>
+                  <label className="mt-3 flex cursor-pointer items-start gap-2.5 text-[0.9rem] font-normal text-ink">
+                    <input type="checkbox" className="mt-1 accent-[var(--accent)]" required checked={accept} onChange={(e) => setAccept(e.target.checked)} />
+                    Entiendo y acepto cómo se usará mi correo
+                  </label>
+                </div>
+              )}
+            </div>
+          )}
 
           {error && (
             <div className="mt-4">
               <ErrorNote message={error} />
             </div>
           )}
-          <Button type="submit" variant="primary" className="mt-6 w-full" disabled={busy}>
-            {busy ? (isRegister ? 'Creando cuenta…' : 'Entrando…') : isRegister ? 'Crear cuenta' : 'Entrar'}
-          </Button>
 
-          {!isRegister && (
-            <p className="mt-4 text-center text-[0.82rem] text-ink-3">
-              {config.googleEnabled
-                ? '¿Olvidaste tu contraseña? Entra con Google usando el mismo correo y crea una nueva desde tu cuenta.'
-                : '¿Olvidaste tu contraseña? Pídele a quien administra el servicio que te genere una nueva.'}
-            </p>
+          {showForm && (
+            <Button type="submit" variant="primary" className="mt-6 w-full" disabled={busy}>
+              {busy ? (isRegister ? 'Creando cuenta…' : 'Entrando…') : isRegister ? 'Crear cuenta' : 'Entrar'}
+            </Button>
           )}
-          {(config.allowSelfRegister || isRegister) && (
+
+          {!isRegister && config.googleEnabled && config.passwordEnabled && (
+            <p className="mt-4 text-center text-[0.82rem] text-ink-3">¿Olvidaste tu contraseña? Recomendamos el acceso con Google.</p>
+          )}
+          {(canRegister || isRegister) && (
             <button type="button" className="mt-4 block w-full text-center text-[0.9rem] font-medium text-accent-text hover:underline" onClick={switchMode}>
               {isRegister ? '¿Ya tienes cuenta? Inicia sesión' : '¿Eres nuevo? Crea tu cuenta'}
             </button>
           )}
-          {!isRegister && <p className="mt-4 text-center text-[0.82rem] text-ink-3">El administrador principal está en ADMIN_USER y ADMIN_PASSWORD de tu .env.</p>}
+          {!config.passwordEnabled && (
+            <button
+              type="button"
+              className="mt-4 block w-full text-center text-[0.82rem] text-ink-3 hover:text-ink hover:underline"
+              onClick={() => {
+                setAdminForm(!adminForm)
+                setError('')
+              }}
+            >
+              {adminForm ? 'Volver al acceso con Google' : 'Entrar como administrador'}
+            </button>
+          )}
         </form>
       </div>
     </main>

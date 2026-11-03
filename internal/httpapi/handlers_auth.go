@@ -13,6 +13,8 @@ import (
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	// Remember keeps the session open for days instead of ending with the browser.
+	Remember bool `json:"remember"`
 }
 
 func (s *server) login(w http.ResponseWriter, r *http.Request) {
@@ -37,12 +39,12 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "usuario o contraseña incorrectos")
 		return
 	}
-	token, exp, err := s.Auth.Issue(id.Subject())
+	token, exp, err := s.Auth.IssueFor(id.Subject(), s.Auth.SessionTTL(req.Remember))
 	if err != nil {
 		s.internalError(w, "issue session", err)
 		return
 	}
-	auth.SetSessionCookie(w, token, exp, isHTTPS(r))
+	auth.SetSessionCookie(w, token, exp, req.Remember, isHTTPS(r))
 	s.Databases.RecordAudit(r.Context(), id.Username, config.ActionLoginSuccess, "", map[string]any{"ip": ip})
 	writeJSON(w, http.StatusOK, map[string]any{"user": id.Username, "role": id.Role, "expiresAt": exp})
 }
@@ -57,6 +59,10 @@ type registerRequest struct {
 }
 
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
+	if s.Settings.AuthMode == config.AuthModeGoogle {
+		writeError(w, http.StatusBadRequest, "el registro con contraseña está desactivado: usa Continuar con Google")
+		return
+	}
 	var req registerRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -73,7 +79,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, "issue session", err)
 		return
 	}
-	auth.SetSessionCookie(w, token, exp, isHTTPS(r))
+	auth.SetSessionCookie(w, token, exp, false, isHTTPS(r))
 	writeJSON(w, http.StatusCreated, map[string]any{"user": u.Username, "role": config.RoleClient, "expiresAt": exp})
 }
 
@@ -90,6 +96,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	if id.ClientUserID != nil {
 		if u, ok, err := s.Clients.ByID(r.Context(), *id.ClientUserID); err == nil && ok {
 			out["email"], out["fullName"], out["hasPassword"] = u.Email, u.FullName, u.HasPassword
+			out["needsUsername"], out["googleLinked"] = u.NeedsUsername, u.GoogleLinked
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

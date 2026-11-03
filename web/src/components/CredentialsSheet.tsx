@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { Credentials } from '../api'
 import { buildSnippets } from '../snippets'
-import { Button, CodeBlock, CopyButton, KeyValue, Notice, SecretField, Sheet, SheetFooter, SheetHeader } from './ui'
+import { Button, ButtonLink, CodeBlock, CopyButton, KeyValue, Notice, SecretField, Sheet, SheetFooter, SheetHeader } from './ui'
 
 /**
  * Shows credentials exactly once (after create, password reset or new
@@ -44,6 +44,9 @@ export function CredentialsSheet({
             <span className="mt-1.5 block font-mono text-[0.85rem] text-ink">
               cloudflared access tcp --hostname {credentials.hostname} --url localhost:{credentials.port}
             </span>
+            <span className="mt-2 block">
+              ¿Primera vez? El tutorial te explica cómo instalar cloudflared en Windows, Mac o Linux.
+            </span>
           </Notice>
         )}
 
@@ -63,6 +66,11 @@ export function CredentialsSheet({
         </div>
       </div>
       <SheetFooter>
+        {!credentials.localMode && (
+          <ButtonLink href={`/ayuda?host=${encodeURIComponent(credentials.hostname)}`} target="_blank" rel="noopener noreferrer">
+            Ver tutorial
+          </ButtonLink>
+        )}
         <Button variant="primary" onClick={onClose}>
           Ya guardé las credenciales
         </Button>

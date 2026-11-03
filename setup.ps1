@@ -2,7 +2,7 @@
 #
 # Safe to run as many times as you want. Every run:
 #   1. Checks Docker (and starts Docker Desktop if it is closed).
-#   2. Creates .env if missing and adds settings introduced by newer versions
+#   2. Creates .env if missing, keeps it organized in the sections of .env.example and adds settings introduced by newer versions
 #      of .env.example, without touching values you already set.
 #   3. Generates secrets that are still empty (never overwrites existing ones)
 #      and prints the panel credentials the first time they are generated.
@@ -88,15 +88,47 @@ function Set-Var([string]$Key, [string]$Value) {
     Write-EnvLines ([string[]]$out)
 }
 
-# Settings added to .env.example by newer versions are appended with their
-# default value; existing settings are never modified.
-foreach ($line in [System.IO.File]::ReadAllLines((Join-Path $PSScriptRoot $ExampleFile))) {
-    if ($line -match '^([A-Z][A-Z0-9_]*)=(.*)$' -and -not (Test-Var $Matches[1])) {
-        $key = $Matches[1]
-        Set-Var $key $Matches[2]
-        Info "Added new setting $key to $EnvFile"
+# Rebuilds .env with the layout of .env.example (sections and comments), so
+# new settings land in their section instead of piling up at the end. Values
+# you already set are kept exactly; settings the example does not know go to a
+# final block. The previous file is saved as .env.bak.
+function Invoke-EnvLayout {
+    $current = Read-EnvLines
+    $values = [ordered]@{}
+    foreach ($l in $current) {
+        if ($l -match '^([A-Z][A-Z0-9_]*)=(.*)$') { $values[$Matches[1]] = $Matches[2] }
+    }
+    $known = @{}
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($line in [System.IO.File]::ReadAllLines((Join-Path $PSScriptRoot $ExampleFile))) {
+        if ($line -match '^([A-Z][A-Z0-9_]*)=(.*)$') {
+            $key = $Matches[1]
+            $known[$key] = $true
+            if ($values.Contains($key)) {
+                $out.Add("$key=$($values[$key])")
+            } else {
+                $out.Add($line)
+                Info "Added new setting $key to $EnvFile"
+            }
+        } else {
+            $out.Add($line.TrimEnd("`r"))
+        }
+    }
+    $extras = @($values.Keys | Where-Object { -not $known.ContainsKey($_) })
+    if ($extras.Count -gt 0) {
+        $out.Add('')
+        $out.Add('# -----------------------------------------------------------------------------')
+        $out.Add('#  OTRAS VARIABLES (no vienen en .env.example)')
+        $out.Add('# -----------------------------------------------------------------------------')
+        foreach ($key in $extras) { $out.Add("$key=$($values[$key])") }
+    }
+    if (($current -join "`n") -ne ($out -join "`n")) {
+        Copy-Item $EnvPath "$EnvPath.bak" -Force
+        Write-EnvLines ([string[]]$out)
+        Info "Organized $EnvFile into sections (previous copy: $EnvFile.bak)"
     }
 }
+Invoke-EnvLayout
 
 function New-RandomString([int]$Length) {
     $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.ToCharArray()

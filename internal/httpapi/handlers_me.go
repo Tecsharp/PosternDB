@@ -59,19 +59,27 @@ func (s *server) createMyDatabase(w http.ResponseWriter, r *http.Request) {
 	if req.TemplateID != 0 && !s.isSharedTemplate(w, r, req.TemplateID) {
 		return
 	}
+	if !s.hasRoomForDatabase(w, r) {
+		return
+	}
 	id := clientID(r)
-	n, err := s.Databases.CountByClient(r.Context(), id)
-	if err != nil {
-		s.internalError(w, "count my databases", err)
-		return
-	}
-	if n >= s.Settings.MaxDatabasesPerClient {
-		writeError(w, http.StatusForbidden, "llegaste al máximo de bases de datos permitidas para tu cuenta")
-		return
-	}
 	req.ClientUserID = &id
 	creds, err := s.Databases.Create(r.Context(), req, actor(r))
 	s.secret(w, http.StatusCreated, "create my database", creds, err)
+}
+
+// hasRoomForDatabase enforces MAX_DATABASES_PER_CLIENT.
+func (s *server) hasRoomForDatabase(w http.ResponseWriter, r *http.Request) bool {
+	n, err := s.Databases.CountByClient(r.Context(), clientID(r))
+	if err != nil {
+		s.internalError(w, "count my databases", err)
+		return false
+	}
+	if n >= s.Settings.MaxDatabasesPerClient {
+		writeError(w, http.StatusForbidden, "llegaste al máximo de bases de datos permitidas para tu cuenta")
+		return false
+	}
+	return true
 }
 
 func (s *server) isSharedTemplate(w http.ResponseWriter, r *http.Request, id int64) bool {

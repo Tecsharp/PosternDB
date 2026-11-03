@@ -52,9 +52,20 @@ type Config struct {
 	// client accounts.
 	AllowSelfRegister   bool
 	MaxDatabasesPerUser int
-	// Google enables "Continuar con Google" for registered users.
+	// Google holds the OAuth client; whether it is used depends on AuthMode.
 	Google GoogleConfig
+	// AuthMode is how registered users sign in: password, google or both.
+	// Administrators always use their username and password.
+	AuthMode string
 }
+
+// GoogleActive reports whether "Continuar con Google" is offered.
+func (c *Config) GoogleActive() bool {
+	return c.AuthMode != AuthModePassword && c.Google.Enabled()
+}
+
+// ClientPasswordLogin reports whether registered users may use a password.
+func (c *Config) ClientPasswordLogin() bool { return c.AuthMode != AuthModeGoogle }
 
 // GoogleConfig holds the OAuth client created in Google Cloud Console.
 type GoogleConfig struct {
@@ -185,6 +196,13 @@ func Load(getenv Getenv) (*Config, error) {
 	if cfg.Google.Enabled() && cfg.Google.RedirectURL == "" {
 		cfg.Google.RedirectURL = defaultGoogleRedirect(local, cfg.PanelHostname, p.positiveInt(EnvPanelLocalPort, DefaultPanelLocalPort))
 	}
+	cfg.AuthMode = strings.ToLower(p.value(EnvAuthMode))
+	if cfg.AuthMode == "" {
+		cfg.AuthMode = AuthModePassword
+		if cfg.Google.Enabled() {
+			cfg.AuthMode = AuthModeBoth
+		}
+	}
 	if token := cloud(EnvCloudflareTunnelToken); token != "" {
 		cfg.Tunnel = p.tunnel(token)
 	}
@@ -276,6 +294,15 @@ func defaultGoogleRedirect(local bool, panelHost string, localPort int) string {
 }
 
 func (p *parser) validate(cfg *Config) {
+	switch cfg.AuthMode {
+	case AuthModePassword:
+	case AuthModeGoogle, AuthModeBoth:
+		if !cfg.Google.Enabled() {
+			p.invalidf("%s=%s needs %s and %s; set them, or use %s=%s", EnvAuthMode, cfg.AuthMode, EnvGoogleClientID, EnvGoogleClientSecret, EnvAuthMode, AuthModePassword)
+		}
+	default:
+		p.invalidf("%s must be %s, %s or %s (got %q)", EnvAuthMode, AuthModePassword, AuthModeGoogle, AuthModeBoth, cfg.AuthMode)
+	}
 	if (cfg.Google.ClientID == "") != (cfg.Google.ClientSecret == "") {
 		p.invalidf("%s and %s must be set together (or both left empty to disable Google sign-in)", EnvGoogleClientID, EnvGoogleClientSecret)
 	}

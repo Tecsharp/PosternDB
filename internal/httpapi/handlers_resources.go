@@ -41,6 +41,10 @@ func (s *server) downloadBackup(w http.ResponseWriter, r *http.Request) {
 		s.domainError(w, "download backup", err)
 		return
 	}
+	s.serveBackup(w, r, path, job)
+}
+
+func (s *server) serveBackup(w http.ResponseWriter, r *http.Request, path string, job model.Job) {
 	f, err := os.Open(path)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "el archivo del respaldo ya no existe")

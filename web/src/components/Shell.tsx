@@ -11,7 +11,9 @@ import {
   MonitorIcon,
   MoonIcon,
   PulseIcon,
+  QuestionCircleIcon,
   SettingsIcon,
+  ShieldKeyholeIcon,
   SunIcon,
   UsersGroupRoundedIcon,
   ClockCircleIcon,
@@ -50,9 +52,16 @@ interface NavItem {
   icon: typeof DatabaseIcon
   match: (r: Route) => boolean
   visible?: (role: Role) => boolean
+  /** Opens in a new tab (the help pages have no sidebar of their own). */
+  external?: boolean
 }
 
-const groups: { label: string; items: NavItem[] }[] = [
+export interface NavGroup {
+  label: string
+  items: NavItem[]
+}
+
+const adminGroups: NavGroup[] = [
   {
     label: 'Operación',
     items: [
@@ -73,18 +82,40 @@ const groups: { label: string; items: NavItem[] }[] = [
   },
 ]
 
+/** The reduced "panel de usuario": only their own databases, backups and account. */
+export const clientGroups: NavGroup[] = [
+  {
+    label: 'Mi espacio',
+    items: [
+      { to: { page: 'my-databases' }, label: 'Mis bases de datos', icon: DatabaseIcon, match: (r) => r.page === 'my-databases' || r.page === 'my-database' },
+      { to: { page: 'my-backups' }, label: 'Respaldos', icon: ArchiveIcon, match: (r) => r.page === 'my-backups' },
+      { to: { page: 'my-activity' }, label: 'Actividad', icon: PulseIcon, match: (r) => r.page === 'my-activity' },
+    ],
+  },
+  {
+    label: 'Cuenta',
+    items: [
+      { to: { page: 'my-security' }, label: 'Seguridad', icon: ShieldKeyholeIcon, match: (r) => r.page === 'my-security' },
+      { to: { page: 'my-settings' }, label: 'Ajustes', icon: SettingsIcon, match: (r) => r.page === 'my-settings' },
+      { to: { page: 'help' }, label: 'Cómo conectarte', icon: QuestionCircleIcon, match: () => false, external: true },
+    ],
+  },
+]
+
 export function Shell({
   route,
   session,
   onLogout,
   onChangePassword,
   children,
+  groups = adminGroups,
 }: {
   route: Route
   session: Session
   onLogout: () => void
   onChangePassword: () => void
   children: ReactNode
+  groups?: NavGroup[]
 }) {
   const [open, setOpen] = useState(false)
   const nav = (
@@ -102,9 +133,10 @@ export function Shell({
                   <li key={i.label}>
                     <a
                       href={to}
+                      {...(i.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
                       onClick={(e) => {
                         setOpen(false)
-                        linkHandler(to)(e)
+                        if (!i.external) linkHandler(to)(e)
                       }}
                       aria-current={current ? 'page' : undefined}
                       className={`flex h-8 items-center gap-2.5 rounded-[6px] px-2.5 text-[0.95rem] ${
@@ -128,10 +160,10 @@ export function Shell({
     <ThemeSwitch />
     <div className="flex items-center gap-2.5 px-4 py-3">
       <span aria-hidden className="grid size-7 shrink-0 place-items-center rounded-full bg-surface-3 text-[0.85rem] font-semibold uppercase">
-        {session.user.slice(0, 1)}
+        {(session.fullName || session.user).slice(0, 1)}
       </span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[0.9rem] font-medium">{session.user}</p>
+        <p className="truncate text-[0.9rem] font-medium" title={session.email ?? session.user}>{session.fullName || session.user}</p>
         <p className="text-[0.82rem] text-ink-3">{roleText[session.role]}</p>
       </div>
       {!session.bootstrap && (
@@ -182,52 +214,16 @@ export function Shell({
   )
 }
 
-/** Minimal top-bar shell for the reduced "panel de usuario": just the logo,
- * theme switch and logout — no admin nav, since a client has one page
- * (their databases) and nothing else to navigate to. */
-export function ClientShell({
-  session,
-  onLogout,
-  onChangePassword,
-  children,
-}: {
-  session: Session
-  onLogout: () => void
-  onChangePassword: () => void
-  children: ReactNode
-}) {
-  return (
-    <div className="flex min-h-dvh flex-col">
-      <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-hairline bg-sidebar px-4 md:px-6">
-        <Logo />
-        <div className="flex items-center gap-3">
-          <ThemeSwitch compact />
-          <span className="hidden max-w-[16rem] truncate text-[0.9rem] text-ink-2 sm:inline" title={session.email ?? session.user}>{session.fullName || session.user}</span>
-          <Button variant="ghost" size="sm" className="px-1.5" onClick={onChangePassword} aria-label="Cambiar mi contraseña" title="Cambiar mi contraseña">
-            <KeyMinimalisticIcon size={18} aria-hidden />
-          </Button>
-          <Button variant="ghost" size="sm" className="px-1.5" onClick={onLogout} aria-label="Cerrar sesión" title="Cerrar sesión">
-            <Logout2Icon size={18} aria-hidden />
-          </Button>
-        </div>
-      </header>
-      <main id="content" tabIndex={-1} className="flex-1 outline-none">
-        {children}
-      </main>
-    </div>
-  )
-}
-
 const themes: { id: Theme; label: string; icon: typeof SunIcon }[] = [
   { id: 'light', label: 'Claro', icon: SunIcon },
   { id: 'dark', label: 'Oscuro', icon: MoonIcon },
   { id: 'system', label: 'Sistema', icon: MonitorIcon },
 ]
 
-function ThemeSwitch({ compact = false }: { compact?: boolean }) {
+function ThemeSwitch() {
   const [theme, setTheme] = useState<Theme>(getTheme)
   return (
-    <div role="group" aria-label="Apariencia" className={`flex rounded-[10px] bg-surface-2 p-0.5 ${compact ? '' : 'mx-4'}`}>
+    <div role="group" aria-label="Apariencia" className="mx-4 flex rounded-[10px] bg-surface-2 p-0.5">
       {themes.map((t) => (
         <button
           key={t.id}
@@ -238,10 +234,10 @@ function ThemeSwitch({ compact = false }: { compact?: boolean }) {
             applyTheme(t.id)
             setTheme(t.id)
           }}
-          className={`flex h-8 items-center justify-center gap-1.5 rounded-[8px] text-[0.82rem] ${compact ? 'w-9' : 'flex-1'} ${theme === t.id ? 'bg-surface font-medium text-ink shadow-[0_1px_1px_rgb(0_0_0/0.12)]' : 'text-ink-2 hover:text-ink'}`}
+          className={`flex h-8 items-center justify-center gap-1.5 rounded-[8px] text-[0.82rem] flex-1 ${theme === t.id ? 'bg-surface font-medium text-ink shadow-[0_1px_1px_rgb(0_0_0/0.12)]' : 'text-ink-2 hover:text-ink'}`}
         >
           <t.icon size={17} aria-hidden />
-          <span className={compact ? 'sr-only' : ''}>{t.label}</span>
+          {t.label}
         </button>
       ))}
     </div>

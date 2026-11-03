@@ -12,6 +12,21 @@ export interface Session {
   email?: string
   fullName?: string
   hasPassword?: boolean
+  needsUsername?: boolean
+  googleLinked?: boolean
+}
+
+/** What a registered user sees and edits about their own account. */
+export interface Account {
+  username: string
+  email: string
+  fullName: string
+  googleLinked: boolean
+  hasPassword: boolean
+  needsUsername: boolean
+  createdAt: string
+  maxDatabases: number
+  databaseCount: number
 }
 
 export interface RegisterForm {
@@ -24,6 +39,8 @@ export interface RegisterForm {
 export interface PublicConfig {
   allowSelfRegister: boolean
   googleEnabled: boolean
+  /** false when AUTH_MODE=google: registered users have no password login. */
+  passwordEnabled: boolean
 }
 
 export interface Database {
@@ -293,7 +310,7 @@ const tablePath = (slug: string, schema: string, table: string) =>
 
 export const api = {
   session: () => request<Session>('GET', '/auth/session'),
-  login: (username: string, password: string) => request<Session>('POST', '/auth/login', { username, password }),
+  login: (username: string, password: string, remember = false) => request<Session>('POST', '/auth/login', { username, password, remember }),
   register: (form: RegisterForm) => request<Session>('POST', '/auth/register', form),
   logout: () => request<void>('POST', '/auth/logout'),
   publicConfig: () => request<PublicConfig>('GET', '/auth/config'),
@@ -384,6 +401,15 @@ const myTablePath = (slug: string, schema: string, table: string) =>
 
 export const me = {
   changePassword: (current: string, next: string) => request<void>('POST', '/me/password', { current, next }),
+  account: () => request<Account>('GET', '/me/account'),
+  updateAccount: (patch: { username?: string; fullName?: string }) => request<Account>('PATCH', '/me/account', patch),
+  googleLinkUrl: '/api/me/google/link',
+  backups: () => request<{ backups: Job[] }>('GET', '/me/backups').then((r) => r.backups),
+  createBackup: (slug: string) => request<Job>('POST', `${myDb(slug)}/backups`),
+  backupDownloadUrl: (id: number) => `/api/me/backups/${id}/download`,
+  deleteBackup: (id: number) => request<void>('DELETE', `/me/backups/${id}`),
+  restoreBackup: (id: number, name: string) => request<Credentials>('POST', `/me/backups/${id}/restore`, { name }),
+  activity: () => request<{ entries: AuditEntry[] }>('GET', '/me/activity').then((r) => r.entries),
   databases: () => request<{ databases: Database[] }>('GET', '/me/databases').then((r) => r.databases),
   templates: () => request<{ templates: Template[] }>('GET', '/me/templates').then((r) => r.templates),
   create: (name: string, templateId?: number) => request<Credentials>('POST', '/me/databases', { name, templateId }),

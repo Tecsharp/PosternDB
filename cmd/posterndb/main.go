@@ -31,6 +31,7 @@ import (
 	"github.com/tecsharp/posterndb/internal/credentials"
 	"github.com/tecsharp/posterndb/internal/expiry"
 	"github.com/tecsharp/posterndb/internal/httpapi"
+	"github.com/tecsharp/posterndb/internal/model"
 	"github.com/tecsharp/posterndb/internal/naming"
 	"github.com/tecsharp/posterndb/internal/notify"
 	"github.com/tecsharp/posterndb/internal/oauth"
@@ -130,10 +131,23 @@ func build(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, logger *
 		BackupDir:          cfg.BackupDir,
 		Logger:             logger,
 	})
+	adminSvc := admins.New(meta, secrets, cfg.AdminUser)
+	// A registered user may not take the owner's or an administrator's name.
+	reserved := func(ctx context.Context, name string) (bool, error) {
+		if name == cfg.AdminUser {
+			return true, nil
+		}
+		if _, err := adminSvc.RoleOf(ctx, name); err == nil {
+			return true, nil
+		} else if !errors.Is(err, model.ErrNotFound) {
+			return false, err
+		}
+		return false, nil
+	}
 	return &application{
 		pool: pool, meta: meta, cluster: cluster, router: router, service: service, inspector: inspector,
-		admins:   admins.New(meta, secrets, cfg.AdminUser),
-		clients:  clients.New(meta, secrets, cfg.AllowSelfRegister),
+		admins:   adminSvc,
+		clients:  clients.New(meta, secrets, cfg.AllowSelfRegister, clients.WithReservedNames(reserved)),
 		notifier: notify.New(cfg.Notify),
 	}, nil
 }
@@ -185,13 +199,15 @@ func serve(ctx context.Context, cfg *config.Config, app *application, logger *sl
 	}
 	go auditor.New(app.meta, app.cluster, app.service, app.notifier, cfg.CheckInterval, logger).Run(ctx)
 
+	authn := auth.New(cfg.AdminUser, cfg.AdminPassword, cfg.JWTSecret, config.SessionTTL, app.admins, app.clients)
+	authn.SetClientPasswordLogin(cfg.ClientPasswordLogin())
 	var google httpapi.GoogleAuth
-	if cfg.Google.Enabled() {
+	if cfg.GoogleActive() {
 		google = oauth.NewGoogle(ctx, cfg.Google.ClientID, cfg.Google.ClientSecret, cfg.Google.RedirectURL)
 		logger.Info("google sign-in enabled", "redirectURL", cfg.Google.RedirectURL)
 	}
 	handler := httpapi.NewRouter(httpapi.Deps{
-		Auth:      auth.New(cfg.AdminUser, cfg.AdminPassword, cfg.JWTSecret, config.SessionTTL, app.admins, app.clients),
+		Auth:      authn,
 		Limiter:   auth.NewRateLimiter(config.LoginRatePerMinute, config.LoginRateBurst),
 		Databases: app.service,
 		Admins:    app.admins,
@@ -260,6 +276,7 @@ func settingsFrom(cfg *config.Config) httpapi.Settings {
 		ClientLocalPort:       cfg.ClientLocalPort,
 		AllowSelfRegister:     cfg.AllowSelfRegister,
 		MaxDatabasesPerClient: cfg.MaxDatabasesPerUser,
+		AuthMode:              cfg.AuthMode,
 	}
 }
 

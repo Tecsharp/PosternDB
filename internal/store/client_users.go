@@ -11,7 +11,7 @@ import (
 
 const clientUserColumns = `id, username, COALESCE(password_hash, ''), never_expires, max_idle_days,
 	created_at, created_by, updated_at, updated_by, last_login_at,
-	COALESCE(email, ''), full_name, COALESCE(google_sub, ''), email_verified_at`
+	COALESCE(email, ''), full_name, COALESCE(google_sub, ''), email_verified_at, needs_username`
 
 // ListClientUsers returns every registered client, for the owner-only
 // "Usuarios" page. Does not include each one's database count; the caller
@@ -48,24 +48,35 @@ func (m *Metadata) GetClientUserByGoogleSub(ctx context.Context, sub string) (mo
 // sign-up, or the admin username when the owner adds one directly.
 func (m *Metadata) CreateClientUser(ctx context.Context, n model.NewClientUser) (model.ClientUser, error) {
 	return scanClientUser(m.pool.QueryRow(ctx, `INSERT INTO client_users
-		(username, email, full_name, password_hash, google_sub, created_by, email_verified_at, email_use_accepted_at)
+		(username, email, full_name, password_hash, google_sub, created_by, email_verified_at, email_use_accepted_at, needs_username)
 		VALUES ($1, NULLIF($2, ''), $3, NULLIF($4, ''), NULLIF($5, ''), $6,
-		        CASE WHEN $7 THEN now() END, CASE WHEN $8 THEN now() END)
+		        CASE WHEN $7 THEN now() END, CASE WHEN $8 THEN now() END, $9)
 		RETURNING `+clientUserColumns,
-		n.Username, n.Email, n.FullName, n.PasswordHash, n.GoogleSub, n.CreatedBy, n.EmailVerified, n.EmailUseAccepted))
+		n.Username, n.Email, n.FullName, n.PasswordHash, n.GoogleSub, n.CreatedBy, n.EmailVerified, n.EmailUseAccepted, n.NeedsUsername))
 }
 
-// LinkClientGoogle ties an account to a Google identity and marks its email
-// as verified. resetPassword also removes the password, used when the email
-// had never been verified, so whoever typed it first cannot keep access.
-func (m *Metadata) LinkClientGoogle(ctx context.Context, id int64, sub, fullName string, resetPassword bool) (model.ClientUser, error) {
+// LinkClientGoogle ties an account to a Google identity. verifyEmail marks
+// the account's email as verified, which is only true when Google vouched for
+// that very address.
+func (m *Metadata) LinkClientGoogle(ctx context.Context, id int64, sub string, verifyEmail bool) (model.ClientUser, error) {
 	return scanClientUser(m.pool.QueryRow(ctx, `UPDATE client_users SET
 		google_sub = $2,
-		email_verified_at = COALESCE(email_verified_at, now()),
-		full_name = CASE WHEN full_name = '' THEN $3 ELSE full_name END,
-		password_hash = CASE WHEN $4 THEN NULL ELSE password_hash END,
+		email_verified_at = CASE WHEN $3 THEN COALESCE(email_verified_at, now()) ELSE email_verified_at END,
 		updated_at = now()
-		WHERE id = $1 RETURNING `+clientUserColumns, id, sub, fullName, resetPassword))
+		WHERE id = $1 RETURNING `+clientUserColumns, id, sub, verifyEmail))
+}
+
+// SetClientUsername stores the username a person chose and clears the
+// "needs a username" flag.
+func (m *Metadata) SetClientUsername(ctx context.Context, id int64, username string) (model.ClientUser, error) {
+	return scanClientUser(m.pool.QueryRow(ctx, `UPDATE client_users SET username = $2, needs_username = false,
+		updated_at = now() WHERE id = $1 RETURNING `+clientUserColumns, id, username))
+}
+
+// SetClientFullName stores the person's full name.
+func (m *Metadata) SetClientFullName(ctx context.Context, id int64, fullName string) (model.ClientUser, error) {
+	return scanClientUser(m.pool.QueryRow(ctx, `UPDATE client_users SET full_name = $2, updated_at = now()
+		WHERE id = $1 RETURNING `+clientUserColumns, id, fullName))
 }
 
 // UpdateClientUserPassword stores a new password hash.
@@ -96,7 +107,7 @@ func scanClientUser(row pgx.Row) (model.ClientUser, error) {
 	var u model.ClientUser
 	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.NeverExpires, &u.MaxIdleDays,
 		&u.CreatedAt, &u.CreatedBy, &u.UpdatedAt, &u.UpdatedBy, &u.LastLoginAt,
-		&u.Email, &u.FullName, &u.GoogleSub, &u.EmailVerifiedAt)
+		&u.Email, &u.FullName, &u.GoogleSub, &u.EmailVerifiedAt, &u.NeedsUsername)
 	u.Derive()
 	return u, translate(err)
 }

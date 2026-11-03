@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react'
 import { CheckCircleIcon, CopyIcon, DangerTriangleIcon, EyeClosedIcon, EyeIcon, InfoCircleIcon, RefreshIcon } from '@solar-icons/react/linear'
 import { ApiError, type Status } from '../api'
 
@@ -11,6 +11,11 @@ const variants: Record<Variant, string> = {
   ghost: 'text-ink-2 hover:bg-surface-2 hover:text-ink',
 }
 
+function buttonClass(variant: Variant, size: 'sm' | 'md', extra: string): string {
+  const sizing = size === 'sm' ? 'h-8 px-3 text-[0.85rem] gap-1.5' : 'h-10 px-4 text-[0.95rem] gap-2'
+  return `inline-flex items-center justify-center rounded-[10px] font-medium whitespace-nowrap transition-[filter,background-color,color] duration-100 disabled:cursor-not-allowed disabled:opacity-40 ${sizing} ${variants[variant]} ${extra}`
+}
+
 /** Boton: relleno, sin contorno; el principal es neutro (tinta sobre fondo). */
 export function Button({
   variant = 'secondary',
@@ -18,14 +23,17 @@ export function Button({
   className = '',
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: 'sm' | 'md' }) {
-  const sizing = size === 'sm' ? 'h-8 px-3 text-[0.85rem] gap-1.5' : 'h-10 px-4 text-[0.95rem] gap-2'
-  return (
-    <button
-      type="button"
-      className={`inline-flex items-center justify-center rounded-[10px] font-medium whitespace-nowrap transition-[filter,background-color,color] duration-100 disabled:cursor-not-allowed disabled:opacity-40 ${sizing} ${variants[variant]} ${className}`}
-      {...props}
-    />
-  )
+  return <button type="button" className={buttonClass(variant, size, className)} {...props} />
+}
+
+/** A link that looks like a Button (downloads, pages that open in a new tab). */
+export function ButtonLink({
+  variant = 'secondary',
+  size = 'md',
+  className = '',
+  ...props
+}: AnchorHTMLAttributes<HTMLAnchorElement> & { variant?: Variant; size?: 'sm' | 'md' }) {
+  return <a className={buttonClass(variant, size, className)} {...props} />
 }
 
 /** Native <dialog> sheet: focus trap, Escape and inert background for free. */
@@ -300,4 +308,24 @@ export function useAction() {
     }
   }, [])
   return { busy, error, run, setError }
+}
+
+/** Password field with a button to show or hide what was typed. */
+export function PasswordInput({ className = '', ...props }: Omit<InputHTMLAttributes<HTMLInputElement>, 'type'>) {
+  const [shown, setShown] = useState(false)
+  return (
+    <span className="relative block">
+      <input {...props} type={shown ? 'text' : 'password'} className={`field pr-11 ${className}`} />
+      <button
+        type="button"
+        onClick={() => setShown(!shown)}
+        aria-pressed={shown}
+        aria-label={shown ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+        title={shown ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+        className="absolute inset-y-0 right-0 grid w-11 place-items-center rounded-r-[10px] text-ink-3 hover:text-ink"
+      >
+        {shown ? <EyeClosedIcon size={18} aria-hidden /> : <EyeIcon size={18} aria-hidden />}
+      </button>
+    </span>
+  )
 }

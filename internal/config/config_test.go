@@ -238,3 +238,56 @@ func TestGoogleNeedsBothClientIDAndSecret(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), EnvGoogleRedirectURL)
 }
+
+func TestAuthModeDefaultsFollowGoogleCredentials(t *testing.T) {
+	cfg, err := Load(getenv(validEnv()))
+	require.NoError(t, err)
+	assert.Equal(t, AuthModePassword, cfg.AuthMode)
+	assert.False(t, cfg.GoogleActive())
+	assert.True(t, cfg.ClientPasswordLogin())
+
+	env := validEnv()
+	env[EnvGoogleClientID], env[EnvGoogleClientSecret] = "id", "secret"
+	cfg, err = Load(getenv(env))
+	require.NoError(t, err)
+	assert.Equal(t, AuthModeBoth, cfg.AuthMode, "credentials present and no AUTH_MODE: both")
+	assert.True(t, cfg.GoogleActive())
+}
+
+func TestAuthModeExplicitChoices(t *testing.T) {
+	withGoogle := func(mode string) map[string]string {
+		env := validEnv()
+		env[EnvGoogleClientID], env[EnvGoogleClientSecret], env[EnvAuthMode] = "id", "secret", mode
+		return env
+	}
+
+	cfg, err := Load(getenv(withGoogle("PASSWORD")))
+	require.NoError(t, err)
+	assert.Equal(t, AuthModePassword, cfg.AuthMode, "case does not matter")
+	assert.False(t, cfg.GoogleActive(), "password mode ignores the Google credentials")
+
+	cfg, err = Load(getenv(withGoogle(AuthModeGoogle)))
+	require.NoError(t, err)
+	assert.True(t, cfg.GoogleActive())
+	assert.False(t, cfg.ClientPasswordLogin(), "google mode: no password for registered users")
+
+	cfg, err = Load(getenv(withGoogle(AuthModeBoth)))
+	require.NoError(t, err)
+	assert.True(t, cfg.GoogleActive())
+	assert.True(t, cfg.ClientPasswordLogin())
+}
+
+func TestAuthModeRejectsMistakes(t *testing.T) {
+	for _, mode := range []string{AuthModeGoogle, AuthModeBoth} {
+		env := validEnv()
+		env[EnvAuthMode] = mode
+		_, err := Load(getenv(env))
+		require.Error(t, err, mode)
+		assert.Contains(t, err.Error(), EnvGoogleClientID, "%s needs the Google credentials", mode)
+	}
+	env := validEnv()
+	env[EnvAuthMode] = "facebook"
+	_, err := Load(getenv(env))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), EnvAuthMode)
+}

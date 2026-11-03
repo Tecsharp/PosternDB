@@ -271,6 +271,9 @@ type ClientUser struct {
 	FullName        string     `json:"fullName,omitempty"`
 	GoogleSub       string     `json:"-"`
 	EmailVerifiedAt *time.Time `json:"emailVerifiedAt,omitempty"`
+	// NeedsUsername is set for accounts created with Google until the person
+	// picks a username.
+	NeedsUsername bool `json:"needsUsername"`
 	// Derived from the sensitive fields above by Derive; safe to serialise.
 	GoogleLinked bool `json:"googleLinked"`
 	HasPassword  bool `json:"hasPassword"`
@@ -293,6 +296,7 @@ type NewClientUser struct {
 	CreatedBy        string // "" = self-registered
 	EmailVerified    bool
 	EmailUseAccepted bool
+	NeedsUsername    bool
 }
 
 // PlatformSettings overrides the .env inactivity policy at runtime. A nil

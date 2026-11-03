@@ -15,11 +15,16 @@ export type Route =
   | { page: 'settings' }
   | { page: 'my-databases' }
   | { page: 'my-database'; slug: string; tab: MyDatabaseTab }
+  | { page: 'my-backups' }
+  | { page: 'my-activity' }
+  | { page: 'my-security' }
+  | { page: 'my-settings' }
+  | { page: 'help' }
 
 export const databaseTabs = ['resumen', 'datos', 'esquema', 'consola', 'conexion', 'usuarios', 'respaldos', 'ajustes'] as const
 export type DatabaseTab = (typeof databaseTabs)[number]
 
-export const myDatabaseTabs = ['resumen', 'datos', 'conexion', 'ajustes'] as const
+export const myDatabaseTabs = ['resumen', 'datos', 'esquema', 'conexion', 'ajustes'] as const
 export type MyDatabaseTab = (typeof myDatabaseTabs)[number]
 
 export function parse(path: string): Route {
@@ -45,6 +50,16 @@ export function parse(path: string): Route {
         return { page: 'my-database', slug: parts[1], tab }
       }
       return { page: 'my-databases' }
+    case 'mis-respaldos':
+      return { page: 'my-backups' }
+    case 'mi-actividad':
+      return { page: 'my-activity' }
+    case 'seguridad':
+      return { page: 'my-security' }
+    case 'ajustes':
+      return { page: 'my-settings' }
+    case 'ayuda':
+      return { page: 'help' }
     default:
       return { page: 'databases' }
   }
@@ -58,6 +73,11 @@ export function href(route: Route): string {
     return `/mis-bases/${encodeURIComponent(route.slug)}${route.tab === 'resumen' ? '' : `/${route.tab}`}`
   }
   if (route.page === 'my-databases') return '/mis-bases'
+  if (route.page === 'my-backups') return '/mis-respaldos'
+  if (route.page === 'my-activity') return '/mi-actividad'
+  if (route.page === 'my-security') return '/seguridad'
+  if (route.page === 'my-settings') return '/ajustes'
+  if (route.page === 'help') return '/ayuda'
   return `/${route.page}`
 }
 

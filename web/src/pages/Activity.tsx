@@ -4,7 +4,7 @@ import { PageBody, PageHeader } from '../components/Shell'
 import { Button, EmptyState, ErrorNote, Loading, useLoad } from '../components/ui'
 import { formatDateTime } from '../format'
 
-const actionText: Record<string, string> = {
+export const actionText: Record<string, string> = {
   db_created: 'Base de datos creada',
   db_deleted: 'Base de datos eliminada',
   db_expired: 'Expiró por inactividad',
@@ -35,9 +35,17 @@ const actionText: Record<string, string> = {
   admin_updated: 'Administrador modificado',
   admin_deleted: 'Administrador eliminado',
   query_executed: 'Consulta en la consola',
+  client_registered: 'Cuenta creada',
+  client_created: 'Cuenta creada por el administrador',
+  client_deleted: 'Cuenta eliminada',
+  client_expiry_changed: 'Vigencia de la cuenta cambiada',
+  client_password_changed: 'Contraseña cambiada',
+  client_password_reset: 'Contraseña restablecida por el administrador',
+  client_google_linked: 'Google vinculado',
+  client_username_changed: 'Nombre de usuario cambiado',
 }
 
-const alerting = new Set(['login_failed', 'provision_failed', 'backup_failed', 'db_expired', 'notification_failed'])
+export const alerting = new Set(['login_failed', 'provision_failed', 'backup_failed', 'db_expired', 'notification_failed'])
 
 type Filter = 'all' | 'databases' | 'security' | 'auditor'
 const filters: { id: Filter; label: string; match: (e: AuditEntry) => boolean }[] = [
@@ -47,7 +55,7 @@ const filters: { id: Filter; label: string; match: (e: AuditEntry) => boolean }[
   { id: 'auditor', label: 'Auditor', match: (e) => e.actor === 'inactivity-auditor' || e.actor === 'backup-sidecar' },
 ]
 
-function summary(e: AuditEntry): string {
+export function summary(e: AuditEntry): string {
   const d = e.details ?? {}
   switch (e.action) {
     case 'inactivity_audit_run':
@@ -62,7 +70,9 @@ function summary(e: AuditEntry): string {
       return String(d.error ?? '')
     case 'login_success':
     case 'login_failed':
-      return d.ip ? `desde ${d.ip}` : ''
+      return d.ip ? `desde ${d.ip}${d.method === 'google' ? ' con Google' : ''}` : ''
+    case 'client_username_changed':
+      return d.from ? `antes ${d.from}` : ''
     default:
       return String(d.file ?? d.hostname ?? d.username ?? '')
   }

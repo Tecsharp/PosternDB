@@ -109,7 +109,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	require.NoError(t, Migrate(context.Background(), pool))
 	var n int
 	require.NoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&n))
-	assert.Equal(t, 7, n)
+	assert.Equal(t, 8, n)
 	var templates int
 	require.NoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM templates").Scan(&templates))
 	assert.Equal(t, 6, templates, "sample templates seeded once, not duplicated by re-running migrations")
@@ -466,10 +466,10 @@ func TestClientIdentityColumns(t *testing.T) {
 	_, err = m.CreateClientUser(ctx, model.NewClientUser{Username: "otra", Email: "ANA@IT.TEST", PasswordHash: "h"})
 	assert.ErrorIs(t, err, model.ErrConflict, "one account per email, whatever the case")
 
-	linked, err := m.LinkClientGoogle(ctx, ana.ID, "sub-it-1", "Nombre de Google", true)
+	linked, err := m.LinkClientGoogle(ctx, ana.ID, "sub-it-1", true)
 	require.NoError(t, err)
 	assert.True(t, linked.GoogleLinked)
-	assert.False(t, linked.HasPassword, "password removed when the link says so")
+	assert.True(t, linked.HasPassword, "linking never removes a password")
 	assert.NotNil(t, linked.EmailVerifiedAt)
 	assert.Equal(t, "Ana López", linked.FullName, "a name the user typed is kept")
 
@@ -491,4 +491,46 @@ func TestClientIdentityColumns(t *testing.T) {
 
 	_, err = m.GetClientUserByEmail(ctx, "nobody@it.test")
 	assert.ErrorIs(t, err, model.ErrNotFound)
+}
+
+func TestClientUsernameAndLinkColumns(t *testing.T) {
+	ctx := context.Background()
+	m := NewMetadata(pool)
+	g, err := m.CreateClientUser(ctx, model.NewClientUser{
+		Username: "gnew@it.test", Email: "gnew@it.test", FullName: "G Nueva", GoogleSub: "sub-it-new",
+		EmailVerified: true, NeedsUsername: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.DeleteClientUser(context.Background(), g.ID) })
+	assert.True(t, g.NeedsUsername)
+
+	chosen, err := m.SetClientUsername(ctx, g.ID, "g.nueva")
+	require.NoError(t, err)
+	assert.Equal(t, "g.nueva", chosen.Username)
+	assert.False(t, chosen.NeedsUsername)
+	assert.Equal(t, "gnew@it.test", chosen.Email, "the email stays")
+
+	other, err := m.CreateClientUser(ctx, model.NewClientUser{Username: "o@it.test", Email: "o@it.test", PasswordHash: "h"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.DeleteClientUser(context.Background(), other.ID) })
+	_, err = m.SetClientUsername(ctx, other.ID, "g.nueva")
+	assert.ErrorIs(t, err, model.ErrConflict, "usernames are unique")
+
+	named, err := m.SetClientFullName(ctx, other.ID, "Otra Persona")
+	require.NoError(t, err)
+	assert.Equal(t, "Otra Persona", named.FullName)
+
+	// Linking from the account: the email is verified only when Google vouched for it.
+	same, err := m.LinkClientGoogle(ctx, other.ID, "sub-it-other", true)
+	require.NoError(t, err)
+	assert.True(t, same.GoogleLinked)
+	assert.True(t, same.HasPassword, "linking keeps the password")
+	assert.NotNil(t, same.EmailVerifiedAt)
+
+	third, err := m.CreateClientUser(ctx, model.NewClientUser{Username: "t@it.test", Email: "t@it.test", PasswordHash: "h"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.DeleteClientUser(context.Background(), third.ID) })
+	diff, err := m.LinkClientGoogle(ctx, third.ID, "sub-it-third", false)
+	require.NoError(t, err)
+	assert.Nil(t, diff.EmailVerifiedAt, "a different Google address does not verify this one")
 }
