@@ -27,14 +27,14 @@ export function JobsList({ jobs }: { jobs: Job[] }) {
   return (
     <ul className="group-rows">
       {jobs.map((j) => (
-        <li key={j.id} className="flex flex-wrap items-center gap-3 px-5 py-3 text-[13px]">
+        <li key={j.id} className="flex flex-wrap items-center gap-3 px-5 py-3 text-[0.95rem]">
           <Tag tone={statusTone[j.status]}>{statusText[j.status]}</Tag>
           <span className="font-medium">{kindText[j.kind]}</span>
-          {j.file && <span className="truncate font-mono text-[12px] text-ink-2">{j.file}</span>}
-          <span className="ml-auto text-[12px] text-ink-3">
+          {j.file && <span className="truncate font-mono text-[0.85rem] text-ink-2">{j.file}</span>}
+          <span className="ml-auto text-[0.85rem] text-ink-3">
             {formatDateTime(j.createdAt)} por {j.requestedBy}
           </span>
-          {j.error && <p className="w-full font-mono text-[12px] text-danger">{j.error}</p>}
+          {j.error && <p className="w-full font-mono text-[0.85rem] text-danger">{j.error}</p>}
         </li>
       ))}
     </ul>
@@ -78,7 +78,7 @@ export function BackupsTab({ db, session }: TabProps) {
                 jobs.reload()
               }}
             >
-              <ArchiveDownMinimalisticIcon size={15} aria-hidden />
+              <ArchiveDownMinimalisticIcon size={17} aria-hidden />
               {action.busy ? 'Encolando…' : 'Respaldar ahora'}
             </Button>
           )
@@ -91,17 +91,17 @@ export function BackupsTab({ db, session }: TabProps) {
         {backups.data && backups.data.length > 0 && (
           <ul className="group-rows">
             {backups.data.map((b) => (
-              <li key={b.id} className="flex flex-wrap items-center gap-3 px-5 py-3 text-[13px]">
+              <li key={b.id} className="flex flex-wrap items-center gap-3 px-5 py-3 text-[0.95rem]">
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-mono text-[12.5px] font-semibold">{b.file}</p>
-                  <p className="text-[12px] text-ink-2">
+                  <p className="truncate font-mono text-[0.9rem] font-semibold">{b.file}</p>
+                  <p className="text-[0.85rem] text-ink-2">
                     {formatDateTime(b.createdAt)}, {b.bytes !== undefined ? formatBytes(b.bytes) : 'tamaño desconocido'}, {kindText[b.kind].toLowerCase()}
                   </p>
                 </div>
                 {operate && (
                   <>
-                    <a className="inline-flex h-6 items-center gap-1.5 rounded-[6px] px-2.5 text-[12px] font-medium text-ink-2 hover:bg-surface-2 hover:text-ink" href={api.backupDownloadUrl(b.id)} download>
-                      <DownloadIcon size={15} aria-hidden />
+                    <a className="inline-flex h-6 items-center gap-1.5 rounded-[6px] px-2.5 text-[0.85rem] font-medium text-ink-2 hover:bg-surface-2 hover:text-ink" href={api.backupDownloadUrl(b.id)} download>
+                      <DownloadIcon size={17} aria-hidden />
                       Descargar
                     </a>
                     <Button size="sm" onClick={() => setRestoring(b)}>
@@ -116,7 +116,7 @@ export function BackupsTab({ db, session }: TabProps) {
       </Panel>
 
       <Panel title="Historial de trabajos">
-        {jobs.data && jobs.data.length > 0 ? <JobsList jobs={jobs.data} /> : <p className="px-5 py-6 text-[13px] text-ink-2">Sin trabajos todavía.</p>}
+        {jobs.data && jobs.data.length > 0 ? <JobsList jobs={jobs.data} /> : <p className="px-5 py-6 text-[0.95rem] text-ink-2">Sin trabajos todavía.</p>}
       </Panel>
 
       <RestoreSheet

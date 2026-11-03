@@ -95,7 +95,7 @@ func scanJob(row pgx.Row) (model.Job, error) {
 
 // ---- templates --------------------------------------------------------------
 
-const templateColumns = `id, name, description, sql, updated_at`
+const templateColumns = `id, name, description, sql, shared, updated_at`
 
 // ListTemplates returns every template.
 func (m *Metadata) ListTemplates(ctx context.Context) ([]model.Template, error) {
@@ -114,11 +114,11 @@ func (m *Metadata) GetTemplate(ctx context.Context, id int64) (model.Template, e
 // SaveTemplate inserts (ID == 0) or updates a template.
 func (m *Metadata) SaveTemplate(ctx context.Context, t model.Template) (model.Template, error) {
 	if t.ID == 0 {
-		return scanTemplate(m.pool.QueryRow(ctx, `INSERT INTO templates (name, description, sql)
-			VALUES ($1, $2, $3) RETURNING `+templateColumns, t.Name, t.Description, t.SQL))
+		return scanTemplate(m.pool.QueryRow(ctx, `INSERT INTO templates (name, description, sql, shared)
+			VALUES ($1, $2, $3, $4) RETURNING `+templateColumns, t.Name, t.Description, t.SQL, t.Shared))
 	}
 	return scanTemplate(m.pool.QueryRow(ctx, `UPDATE templates SET name = $2, description = $3, sql = $4,
-		updated_at = now() WHERE id = $1 RETURNING `+templateColumns, t.ID, t.Name, t.Description, t.SQL))
+		shared = $5, updated_at = now() WHERE id = $1 RETURNING `+templateColumns, t.ID, t.Name, t.Description, t.SQL, t.Shared))
 }
 
 // DeleteTemplate removes a template.
@@ -128,6 +128,6 @@ func (m *Metadata) DeleteTemplate(ctx context.Context, id int64) error {
 
 func scanTemplate(row pgx.Row) (model.Template, error) {
 	var t model.Template
-	err := row.Scan(&t.ID, &t.Name, &t.Description, &t.SQL, &t.UpdatedAt)
+	err := row.Scan(&t.ID, &t.Name, &t.Description, &t.SQL, &t.Shared, &t.UpdatedAt)
 	return t, translate(err)
 }

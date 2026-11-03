@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api, type Session, type Settings } from './api'
-import { Shell } from './components/Shell'
+import { api, me, type Session, type Settings } from './api'
+import { ClientShell, Shell } from './components/Shell'
 import { Button, ErrorNote, Loading, Sheet, SheetFooter, SheetHeader, useAction } from './components/ui'
 import { Activity } from './pages/Activity'
 import { Admins } from './pages/Admins'
 import { Backups } from './pages/Backups'
+import { Clients } from './pages/Clients'
+import { Expiry } from './pages/Expiry'
 import { DatabaseDetail } from './pages/db/DatabaseDetail'
 import { Databases } from './pages/Databases'
 import { Login } from './pages/Login'
+import { MyDatabaseDetail } from './pages/me/MyDatabaseDetail'
+import { MyDatabases } from './pages/me/MyDatabases'
 import { SettingsPage } from './pages/SettingsPage'
 import { Templates } from './pages/Templates'
 import { useRoute } from './router'
@@ -25,7 +29,30 @@ export default function App() {
 
   if (session === undefined) return <Loading label="Cargando…" />
   if (session === null) return <Login onLoggedIn={setSession} />
+  if (session.role === 'client') return <ClientWorkspace session={session} onLoggedOut={loggedOut} />
   return <Workspace session={session} onLoggedOut={loggedOut} />
+}
+
+/**
+ * The reduced "panel de usuario" a self-service client lands on: only their
+ * own databases, browsing and editing data, never the SQL console and never
+ * another client's data. Deliberately not the admin Shell/nav.
+ */
+function ClientWorkspace({ session, onLoggedOut }: { session: Session; onLoggedOut: () => void }) {
+  const route = useRoute()
+  const [changingPassword, setChangingPassword] = useState(false)
+
+  async function logout() {
+    await api.logout().catch(() => undefined)
+    onLoggedOut()
+  }
+
+  return (
+    <ClientShell session={session} onLogout={logout} onChangePassword={() => setChangingPassword(true)}>
+      {route.page === 'my-database' ? <MyDatabaseDetail key={route.slug} slug={route.slug} tab={route.tab} /> : <MyDatabases />}
+      <ChangePasswordSheet open={changingPassword} onClose={() => setChangingPassword(false)} changePassword={me.changePassword} />
+    </ClientShell>
+  )
 }
 
 export interface PageProps {
@@ -58,13 +85,23 @@ function Workspace({ session, onLoggedOut }: { session: Session; onLoggedOut: ()
       {route.page === 'templates' && <Templates {...props} />}
       {route.page === 'activity' && <Activity />}
       {route.page === 'admins' && <Admins {...props} />}
+      {route.page === 'clients' && <Clients {...props} />}
+      {route.page === 'expiry' && <Expiry {...props} />}
       {route.page === 'settings' && <SettingsPage {...props} />}
-      <ChangePasswordSheet open={changingPassword} onClose={() => setChangingPassword(false)} />
+      <ChangePasswordSheet open={changingPassword} onClose={() => setChangingPassword(false)} changePassword={api.changePassword} />
     </Shell>
   )
 }
 
-function ChangePasswordSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+function ChangePasswordSheet({
+  open,
+  onClose,
+  changePassword,
+}: {
+  open: boolean
+  onClose: () => void
+  changePassword: (current: string, next: string) => Promise<void>
+}) {
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
   const [done, setDone] = useState(false)
@@ -79,7 +116,7 @@ function ChangePasswordSheet({ open, onClose }: { open: boolean; onClose: () => 
 
   async function submit(e: FormEvent) {
     e.preventDefault()
-    const ok = await run(() => api.changePassword(current, next).then(() => true))
+    const ok = await run(() => changePassword(current, next).then(() => true))
     if (ok) setDone(true)
   }
 
@@ -89,7 +126,7 @@ function ChangePasswordSheet({ open, onClose }: { open: boolean; onClose: () => 
         <SheetHeader id="pw-title" title="Cambiar mi contraseña" subtitle="Mínimo 12 caracteres." />
         <div className="space-y-4 px-6 py-5">
           {done ? (
-            <p role="status" className="text-[13px] text-accent-text">
+            <p role="status" className="text-[0.95rem] text-accent-text">
               Contraseña actualizada.
             </p>
           ) : (

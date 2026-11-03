@@ -93,6 +93,7 @@ type templateRequest struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	SQL         string `json:"sql"`
+	Shared      bool   `json:"shared"`
 }
 
 func (s *server) createTemplate(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +113,7 @@ func (s *server) saveTemplate(w http.ResponseWriter, r *http.Request, id int64, 
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	t, err := s.Databases.SaveTemplate(r.Context(), model.Template{ID: id, Name: req.Name, Description: req.Description, SQL: req.SQL}, actor(r))
+	t, err := s.Databases.SaveTemplate(r.Context(), model.Template{ID: id, Name: req.Name, Description: req.Description, SQL: req.SQL, Shared: req.Shared}, actor(r))
 	s.respondStatus(w, status, "save template", t, err)
 }
 

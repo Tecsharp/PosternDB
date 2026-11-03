@@ -41,7 +41,7 @@ export function CredentialsSheet({
         {!credentials.localMode && (
           <Notice tone="info">
             Antes de conectar, abre el túnel en la máquina cliente:
-            <span className="mt-1.5 block font-mono text-[12px] text-ink">
+            <span className="mt-1.5 block font-mono text-[0.85rem] text-ink">
               cloudflared access tcp --hostname {credentials.hostname} --url localhost:{credentials.port}
             </span>
           </Notice>
@@ -58,7 +58,7 @@ export function CredentialsSheet({
               </option>
             ))}
           </select>
-          <p className="mb-2 text-[12px] text-ink-2">{current.description}</p>
+          <p className="mb-2 text-[0.85rem] text-ink-2">{current.description}</p>
           <CodeBlock code={current.code} label={current.title} />
         </div>
       </div>

@@ -39,7 +39,7 @@ func newHarness() harness {
 		Resolver: naming.Resolver{BaseDomain: "x.com"}, Policy: policy, BackupBeforeDelete: true,
 		Now: func() time.Time { return now }, Logger: logger,
 	})
-	h.a = New(h.meta, h.cluster, svc, h.notifier, policy, time.Hour, logger)
+	h.a = New(h.meta, h.cluster, svc, h.notifier, time.Hour, logger)
 	h.a.now = func() time.Time { return now }
 	return h
 }
@@ -252,4 +252,17 @@ func TestNewSessions(t *testing.T) {
 	assert.Equal(t, int64(3), newSessions(10, 13))
 	assert.Equal(t, int64(0), newSessions(10, 10))
 	assert.Equal(t, int64(4), newSessions(10, 4))
+}
+
+func TestAuditorUsesGlobalOverride(t *testing.T) {
+	h := newHarness()
+	days := 10
+	_, err := h.meta.SetPlatformSettings(context.Background(), &days, nil, "root")
+	require.NoError(t, err)
+	db := h.seed("short-lived", now.Add(-11*day), 0)
+
+	res := h.a.RunOnce(context.Background())
+
+	assert.Equal(t, 1, res.Expired, "expires against the 10-day override, not the 30-day default")
+	assert.Equal(t, config.StateExpired, h.meta.Rows[db.ID].State)
 }

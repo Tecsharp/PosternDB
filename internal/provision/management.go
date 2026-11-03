@@ -201,6 +201,15 @@ func (s *Service) Stats(ctx context.Context, slug string) (model.DatabaseStats, 
 	return st, err
 }
 
+// Connections lists the sessions open right now on a live database.
+func (s *Service) Connections(ctx context.Context, slug string) ([]model.Connection, error) {
+	db, err := s.active(ctx, slug)
+	if err != nil {
+		return nil, err
+	}
+	return s.cluster.DatabaseConnections(ctx, db.DBName)
+}
+
 // Schema returns the structure of a live database.
 func (s *Service) Schema(ctx context.Context, slug string) (model.Schema, error) {
 	db, err := s.active(ctx, slug)
@@ -336,6 +345,21 @@ func (s *Service) DeleteBackup(ctx context.Context, id int64, actor string) erro
 // ListTemplates returns every template.
 func (s *Service) ListTemplates(ctx context.Context) ([]model.Template, error) {
 	return s.meta.ListTemplates(ctx)
+}
+
+// SharedTemplates returns the templates offered to self-service users.
+func (s *Service) SharedTemplates(ctx context.Context) ([]model.Template, error) {
+	all, err := s.meta.ListTemplates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	shared := make([]model.Template, 0, len(all))
+	for _, t := range all {
+		if t.Shared {
+			shared = append(shared, t)
+		}
+	}
+	return shared, nil
 }
 
 // SaveTemplate creates or updates a template.

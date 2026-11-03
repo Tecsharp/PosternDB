@@ -20,7 +20,7 @@ export function ConnectTab({ db }: TabProps) {
           <KeyValue
             stacked
             rows={[
-              [info.localMode ? 'Servidor' : 'Host público', <span className="font-mono text-[12.5px] break-all">{info.localMode ? `127.0.0.1:${info.port}` : info.hostname}</span>],
+              [info.localMode ? 'Servidor' : 'Host público', <span className="font-mono text-[0.9rem] break-all">{info.localMode ? `127.0.0.1:${info.port}` : info.hostname}</span>],
               ['Puerto local', <span className="font-mono">{info.port}</span>],
               ['Base de datos', <span className="font-mono">{info.database}</span>],
               ['Usuario', <span className="font-mono">{info.username}</span>],
@@ -38,7 +38,7 @@ export function ConnectTab({ db }: TabProps) {
                   type="button"
                   onClick={() => setPicked(s.id)}
                   aria-current={s.id === current.id ? 'true' : undefined}
-                  className={`w-full rounded-[6px] px-2.5 py-1.5 text-left text-[13px] ${s.id === current.id ? 'bg-surface-3 font-medium' : 'text-ink hover:bg-surface-2'}`}
+                  className={`w-full rounded-[6px] px-2.5 py-1.5 text-left text-[0.95rem] ${s.id === current.id ? 'bg-surface-3 font-medium' : 'text-ink hover:bg-surface-2'}`}
                 >
                   {s.title}
                 </button>
@@ -49,10 +49,10 @@ export function ConnectTab({ db }: TabProps) {
       </div>
       <Panel title={current.title}>
         <div className="space-y-3 px-5 py-4">
-          <p className="text-[13px] text-ink-2">{current.description}</p>
+          <p className="text-[0.95rem] text-ink-2">{current.description}</p>
           <CodeBlock code={current.code} label={current.title} />
           {!info.localMode && current.id !== 'cloudflared' && current.id !== 'compose' && current.id !== 'systemd' && current.id !== 'launchd' && (
-            <p className="text-[12px] text-ink-3">Requiere el túnel abierto en esa máquina (ver "Abrir el túnel" o el servicio para tu sistema).</p>
+            <p className="text-[0.85rem] text-ink-3">Requiere el túnel abierto en esa máquina (ver "Abrir el túnel" o el servicio para tu sistema).</p>
           )}
         </div>
       </Panel>

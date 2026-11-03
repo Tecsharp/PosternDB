@@ -25,6 +25,7 @@ import (
 	"github.com/tecsharp/posterndb/internal/admins"
 	"github.com/tecsharp/posterndb/internal/auditor"
 	"github.com/tecsharp/posterndb/internal/auth"
+	"github.com/tecsharp/posterndb/internal/clients"
 	"github.com/tecsharp/posterndb/internal/cloudflare"
 	"github.com/tecsharp/posterndb/internal/config"
 	"github.com/tecsharp/posterndb/internal/credentials"
@@ -82,6 +83,7 @@ type application struct {
 	router    cloudflare.Router
 	service   *provision.Service
 	admins    *admins.Service
+	clients   *clients.Service
 	notifier  *notify.Multi
 	inspector *store.Inspector
 }
@@ -129,7 +131,9 @@ func build(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, logger *
 	})
 	return &application{
 		pool: pool, meta: meta, cluster: cluster, router: router, service: service, inspector: inspector,
-		admins: admins.New(meta, secrets, cfg.AdminUser), notifier: notify.New(cfg.Notify),
+		admins:   admins.New(meta, secrets, cfg.AdminUser),
+		clients:  clients.New(meta, secrets, cfg.AllowSelfRegister),
+		notifier: notify.New(cfg.Notify),
 	}, nil
 }
 
@@ -178,13 +182,14 @@ func serve(ctx context.Context, cfg *config.Config, app *application, logger *sl
 	if !cfg.LocalMode {
 		go publishPanel(ctx, cfg, app.router, logger)
 	}
-	go auditor.New(app.meta, app.cluster, app.service, app.notifier, expiry.NewPolicy(cfg), cfg.CheckInterval, logger).Run(ctx)
+	go auditor.New(app.meta, app.cluster, app.service, app.notifier, cfg.CheckInterval, logger).Run(ctx)
 
 	handler := httpapi.NewRouter(httpapi.Deps{
-		Auth:      auth.New(cfg.AdminUser, cfg.AdminPassword, cfg.JWTSecret, config.SessionTTL, app.admins),
+		Auth:      auth.New(cfg.AdminUser, cfg.AdminPassword, cfg.JWTSecret, config.SessionTTL, app.admins, app.clients),
 		Limiter:   auth.NewRateLimiter(config.LoginRatePerMinute, config.LoginRateBurst),
 		Databases: app.service,
 		Admins:    app.admins,
+		Clients:   app.clients,
 		Audit:     app.meta,
 		Health:    app.pool,
 		Notifier:  app.notifier,
@@ -235,17 +240,19 @@ func publishPanel(ctx context.Context, cfg *config.Config, router cloudflare.Rou
 
 func settingsFrom(cfg *config.Config) httpapi.Settings {
 	return httpapi.Settings{
-		BaseDomain:         cfg.BaseDomain,
-		PanelHostname:      cfg.PanelHostname,
-		ClientHostPrefix:   cfg.ClientHostPrefix,
-		ExampleHostname:    naming.NewResolver(cfg).Hostname("cliente1"),
-		ExpirationDays:     int(cfg.DBExpiration.Hours() / 24),
-		ExpiringSoonDays:   int(cfg.ExpiringSoon.Hours() / 24),
-		CheckIntervalHours: int(cfg.CheckInterval.Hours()),
-		BackupBeforeDelete: cfg.BackupBeforeDelete,
-		LocalMode:          cfg.LocalMode,
-		LocalDBPort:        cfg.LocalDBPort,
-		ClientLocalPort:    cfg.ClientLocalPort,
+		BaseDomain:            cfg.BaseDomain,
+		PanelHostname:         cfg.PanelHostname,
+		ClientHostPrefix:      cfg.ClientHostPrefix,
+		ExampleHostname:       naming.NewResolver(cfg).Hostname("cliente1"),
+		ExpirationDays:        int(cfg.DBExpiration.Hours() / 24),
+		ExpiringSoonDays:      int(cfg.ExpiringSoon.Hours() / 24),
+		CheckIntervalHours:    int(cfg.CheckInterval.Hours()),
+		BackupBeforeDelete:    cfg.BackupBeforeDelete,
+		LocalMode:             cfg.LocalMode,
+		LocalDBPort:           cfg.LocalDBPort,
+		ClientLocalPort:       cfg.ClientLocalPort,
+		AllowSelfRegister:     cfg.AllowSelfRegister,
+		MaxDatabasesPerClient: cfg.MaxDatabasesPerUser,
 	}
 }
 

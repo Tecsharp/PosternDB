@@ -161,6 +161,11 @@ func (c *FakeCluster) CreateUserRole(ctx context.Context, role, _, verifier stri
 }
 
 // DatabaseStats returns the configured stats.
+func (c *FakeCluster) DatabaseConnections(context.Context, string) ([]model.Connection, error) {
+	return []model.Connection{{PID: 4242, User: "pdb_demo", Application: "psql", State: "active", Query: "SELECT 1"}}, nil
+}
+
+// DatabaseStats returns canned stats.
 func (c *FakeCluster) DatabaseStats(context.Context, string) (model.DatabaseStats, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -196,6 +201,9 @@ type FakeInspector struct {
 	Result      model.QueryResult
 	Rows        int64
 	Queries     []string
+	Data        model.TableData
+	Writes      []string
+	FailWrite   bool
 	FailApply   bool
 	FailGrant   bool
 	FailDrop    bool
@@ -277,24 +285,54 @@ func (f *FakeInspector) DropUserObjects(_ context.Context, _, _, user string) er
 	})
 }
 
+// Browse returns the configured page.
+func (f *FakeInspector) Browse(_ context.Context, _, _, schema, table string, page, size int, sort string, desc bool) (model.TableData, error) {
+	var d model.TableData
+	err := f.locked(f.FailRead, func() {
+		f.Queries = append(f.Queries, fmt.Sprintf("browse %s.%s page=%d size=%d sort=%s desc=%t", schema, table, page, size, sort, desc))
+		d = f.Data
+	})
+	return d, err
+}
+
+// InsertRow records the write.
+func (f *FakeInspector) InsertRow(_ context.Context, _, _, schema, table string, values model.RowValues) error {
+	return f.locked(f.FailWrite, func() { f.Writes = append(f.Writes, fmt.Sprintf("insert %s.%s %d", schema, table, len(values))) })
+}
+
+// UpdateRow records the write.
+func (f *FakeInspector) UpdateRow(_ context.Context, _, _, schema, table string, key, values model.RowValues) error {
+	return f.locked(f.FailWrite, func() {
+		f.Writes = append(f.Writes, fmt.Sprintf("update %s.%s key=%d values=%d", schema, table, len(key), len(values)))
+	})
+}
+
+// DeleteRow records the write.
+func (f *FakeInspector) DeleteRow(_ context.Context, _, _, schema, table string, key model.RowValues) error {
+	return f.locked(f.FailWrite, func() { f.Writes = append(f.Writes, fmt.Sprintf("delete %s.%s key=%d", schema, table, len(key))) })
+}
+
 // ---- metadata ---------------------------------------------------------------------------
 
 // FakeMetadata is an in-memory metadata repository.
 type FakeMetadata struct {
-	mu         sync.Mutex
-	nextID     int64
-	Rows       map[int64]*model.ClientDatabase
-	Audit      []model.AuditEntry
-	Users      map[int64]*model.DatabaseUser
-	Jobs       []model.Job
-	Templates  map[int64]*model.Template
-	Admins     map[string]*model.Admin
-	Internal   map[string]int
-	FailInsert bool
-	FailList   bool
-	FailUpdate bool
-	FailAudit  bool
-	FailJob    bool
+	mu          sync.Mutex
+	nextID      int64
+	nextUserID  int64
+	Rows        map[int64]*model.ClientDatabase
+	Audit       []model.AuditEntry
+	Users       map[int64]*model.DatabaseUser
+	Jobs        []model.Job
+	Templates   map[int64]*model.Template
+	Admins      map[string]*model.Admin
+	Internal    map[string]int
+	Settings    model.PlatformSettings
+	ClientUsers map[int64]*model.ClientUser
+	FailInsert  bool
+	FailList    bool
+	FailUpdate  bool
+	FailAudit   bool
+	FailJob     bool
 }
 
 // NewFakeMetadata returns an empty repository.
@@ -302,6 +340,7 @@ func NewFakeMetadata() *FakeMetadata {
 	return &FakeMetadata{
 		Rows: map[int64]*model.ClientDatabase{}, Users: map[int64]*model.DatabaseUser{},
 		Templates: map[int64]*model.Template{}, Admins: map[string]*model.Admin{}, Internal: map[string]int{},
+		ClientUsers: map[int64]*model.ClientUser{},
 	}
 }
 
@@ -648,6 +687,159 @@ func (m *FakeMetadata) DeleteTemplate(_ context.Context, id int64) error {
 	defer m.mu.Unlock()
 	delete(m.Templates, id)
 	return nil
+}
+
+// ---- platform settings -----------------------------------------------------------------------
+
+// GetPlatformSettings returns the configured override.
+func (m *FakeMetadata) GetPlatformSettings(context.Context) (model.PlatformSettings, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailList {
+		return model.PlatformSettings{}, ErrInjected
+	}
+	return m.Settings, nil
+}
+
+// SetPlatformSettings stores the override.
+func (m *FakeMetadata) SetPlatformSettings(_ context.Context, days, warnDays *int, actor string) (model.PlatformSettings, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailUpdate {
+		return model.PlatformSettings{}, ErrInjected
+	}
+	m.Settings = model.PlatformSettings{ExpirationDays: days, ExpiringSoonDays: warnDays, UpdatedBy: actor}
+	return m.Settings, nil
+}
+
+// ---- client users (self-service tenants) -------------------------------------------------------
+
+// ListClientUsers returns stored clients.
+func (m *FakeMetadata) ListClientUsers(context.Context) ([]model.ClientUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailList {
+		return nil, ErrInjected
+	}
+	out := []model.ClientUser{}
+	for _, u := range m.ClientUsers {
+		out = append(out, *u)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
+	return out, nil
+}
+
+// GetClientUser finds a client by id.
+func (m *FakeMetadata) GetClientUser(_ context.Context, id int64) (model.ClientUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if u, ok := m.ClientUsers[id]; ok {
+		return *u, nil
+	}
+	return model.ClientUser{}, model.ErrNotFound
+}
+
+// GetClientUserByUsername finds a client by username.
+func (m *FakeMetadata) GetClientUserByUsername(_ context.Context, username string) (model.ClientUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range m.ClientUsers {
+		if u.Username == username {
+			return *u, nil
+		}
+	}
+	return model.ClientUser{}, model.ErrNotFound
+}
+
+// CreateClientUser stores a new client.
+func (m *FakeMetadata) CreateClientUser(_ context.Context, username, passwordHash, createdBy string) (model.ClientUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailInsert {
+		return model.ClientUser{}, ErrInjected
+	}
+	for _, u := range m.ClientUsers {
+		if u.Username == username {
+			return model.ClientUser{}, model.ErrConflict
+		}
+	}
+	m.nextUserID++
+	u := model.ClientUser{ID: m.nextUserID, Username: username, PasswordHash: passwordHash, CreatedBy: createdBy}
+	m.ClientUsers[u.ID] = &u
+	return u, nil
+}
+
+func (m *FakeMetadata) clientUser(id int64, fn func(*model.ClientUser)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailUpdate {
+		return ErrInjected
+	}
+	u, ok := m.ClientUsers[id]
+	if !ok {
+		return model.ErrNotFound
+	}
+	fn(u)
+	return nil
+}
+
+// UpdateClientUserPassword stores a new password hash.
+func (m *FakeMetadata) UpdateClientUserPassword(_ context.Context, id int64, hash string) error {
+	return m.clientUser(id, func(u *model.ClientUser) { u.PasswordHash = hash })
+}
+
+// TouchClientUserLogin records a login.
+func (m *FakeMetadata) TouchClientUserLogin(_ context.Context, id int64, at time.Time) error {
+	return m.clientUser(id, func(u *model.ClientUser) { u.LastLoginAt = &at })
+}
+
+// SetClientUserExpiry stores the owner's exception.
+func (m *FakeMetadata) SetClientUserExpiry(_ context.Context, id int64, never bool, maxIdleDays *int, actor string) (model.ClientUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailUpdate {
+		return model.ClientUser{}, ErrInjected
+	}
+	u, ok := m.ClientUsers[id]
+	if !ok {
+		return model.ClientUser{}, model.ErrNotFound
+	}
+	u.NeverExpires, u.MaxIdleDays, u.UpdatedBy = never, maxIdleDays, actor
+	return *u, nil
+}
+
+// DeleteClientUser removes a client.
+func (m *FakeMetadata) DeleteClientUser(_ context.Context, id int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.ClientUsers[id]; !ok {
+		return model.ErrNotFound
+	}
+	delete(m.ClientUsers, id)
+	return nil
+}
+
+// ListByClientUser returns the non-deleted databases owned by one client.
+func (m *FakeMetadata) ListByClientUser(_ context.Context, clientUserID int64) ([]model.ClientDatabase, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailList {
+		return nil, ErrInjected
+	}
+	out := []model.ClientDatabase{}
+	for _, db := range m.Rows {
+		if db.ClientUserID != nil && *db.ClientUserID == clientUserID && db.State != config.StateDeleted {
+			out = append(out, *db)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// CountByClientUser counts the non-deleted databases a client owns.
+func (m *FakeMetadata) CountByClientUser(_ context.Context, clientUserID int64) (int, error) {
+	dbs, err := m.ListByClientUser(context.Background(), clientUserID)
+	return len(dbs), err
 }
 
 // ---- admins --------------------------------------------------------------------------------

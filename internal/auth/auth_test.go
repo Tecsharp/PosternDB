@@ -17,7 +17,7 @@ import (
 const secret = "0123456789abcdef0123456789abcdef"
 
 func newAuth() *Authenticator {
-	return New("admin", "correct horse battery", secret, time.Hour, nil)
+	return New("admin", "correct horse battery", secret, time.Hour, nil, nil)
 }
 
 func TestCheckCredentials(t *testing.T) {
@@ -50,7 +50,7 @@ func TestVerifyRejectsExpired(t *testing.T) {
 }
 
 func TestVerifyRejectsForeignSignature(t *testing.T) {
-	other := New("admin", "x", strings.Repeat("z", 32), time.Hour, nil)
+	other := New("admin", "x", strings.Repeat("z", 32), time.Hour, nil, nil)
 	token, _, _ := other.Issue("admin")
 	_, err := newAuth().Verify(token)
 	assert.ErrorIs(t, err, ErrInvalidSession)

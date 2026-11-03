@@ -14,7 +14,8 @@ import (
 
 const clientColumns = `id, slug, db_name, role_name, hostname, state, created_at,
 	last_seen_at, expired_at, COALESCE(archived_as, ''), sessions_baseline,
-	internal_sessions, internal_baseline, never_expires, max_idle_days, grace_until, expiry_warned_at`
+	internal_sessions, internal_baseline, never_expires, max_idle_days, grace_until, expiry_warned_at,
+	client_user_id`
 
 // Metadata is the repository for client_databases and audit_log.
 type Metadata struct {
@@ -30,9 +31,9 @@ func NewMetadata(pool *pgxpool.Pool) *Metadata {
 // at creation time so a new database gets the full grace period.
 func (m *Metadata) InsertDatabase(ctx context.Context, db model.ClientDatabase) (model.ClientDatabase, error) {
 	row := m.pool.QueryRow(ctx, `INSERT INTO client_databases
-		(slug, db_name, role_name, hostname, state, last_seen_at, sessions_baseline)
-		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+clientColumns,
-		db.Slug, db.DBName, db.RoleName, db.Hostname, config.StateActive, db.LastSeenAt, db.SessionsBaseline)
+		(slug, db_name, role_name, hostname, state, last_seen_at, sessions_baseline, client_user_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+clientColumns,
+		db.Slug, db.DBName, db.RoleName, db.Hostname, config.StateActive, db.LastSeenAt, db.SessionsBaseline, db.ClientUserID)
 	return scanClient(row)
 }
 
@@ -46,6 +47,22 @@ func (m *Metadata) ListDatabases(ctx context.Context) ([]model.ClientDatabase, e
 func (m *Metadata) ListActive(ctx context.Context) ([]model.ClientDatabase, error) {
 	return m.queryClients(ctx, `SELECT `+clientColumns+` FROM client_databases
 		WHERE state = $1 ORDER BY id`, config.StateActive)
+}
+
+// ListByClientUser returns the non-deleted databases owned by one client,
+// for the reduced "panel de usuario".
+func (m *Metadata) ListByClientUser(ctx context.Context, clientUserID int64) ([]model.ClientDatabase, error) {
+	return m.queryClients(ctx, `SELECT `+clientColumns+` FROM client_databases
+		WHERE client_user_id = $1 AND state <> $2 ORDER BY created_at DESC`, clientUserID, config.StateDeleted)
+}
+
+// CountByClientUser returns how many non-deleted databases a client owns,
+// enforced against MAX_DATABASES_PER_CLIENT at creation time.
+func (m *Metadata) CountByClientUser(ctx context.Context, clientUserID int64) (int, error) {
+	var n int
+	err := m.pool.QueryRow(ctx, `SELECT count(*) FROM client_databases
+		WHERE client_user_id = $1 AND state <> $2`, clientUserID, config.StateDeleted).Scan(&n)
+	return n, err
 }
 
 // GetDatabase finds the live (non-deleted) database for a slug.
@@ -157,7 +174,8 @@ func scanClient(row pgx.Row) (model.ClientDatabase, error) {
 	var c model.ClientDatabase
 	err := row.Scan(&c.ID, &c.Slug, &c.DBName, &c.RoleName, &c.Hostname, &c.State, &c.CreatedAt,
 		&c.LastSeenAt, &c.ExpiredAt, &c.ArchivedAs, &c.SessionsBaseline,
-		&c.InternalSessions, &c.InternalBaseline, &c.NeverExpires, &c.MaxIdleDays, &c.GraceUntil, &c.ExpiryWarnedAt)
+		&c.InternalSessions, &c.InternalBaseline, &c.NeverExpires, &c.MaxIdleDays, &c.GraceUntil, &c.ExpiryWarnedAt,
+		&c.ClientUserID)
 	return c, translate(err)
 }
 

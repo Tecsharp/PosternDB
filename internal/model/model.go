@@ -37,6 +37,10 @@ type ClientDatabase struct {
 	MaxIdleDays      *int       `json:"maxIdleDays,omitempty"`
 	GraceUntil       *time.Time `json:"graceUntil,omitempty"`
 	ExpiryWarnedAt   *time.Time `json:"-"`
+	// ClientUserID, when set, is the self-service client (see ClientUser)
+	// this database belongs to. A database with no client user was created
+	// through the admin panel and is managed by administrators only.
+	ClientUserID *int64 `json:"clientUserId,omitempty"`
 }
 
 // AuditEntry is one row of audit_log.
@@ -101,11 +105,14 @@ type Job struct {
 
 // Template is reusable SQL applied to new databases.
 type Template struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	SQL         string    `json:"sql"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	SQL         string `json:"sql"`
+	// Shared templates are offered to self-service users when they create
+	// a database; the others stay admin-only.
+	Shared    bool      `json:"shared"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // DatabaseStats summarises size and usage of one client database.
@@ -118,6 +125,19 @@ type DatabaseStats struct {
 	TableCount      int          `json:"tableCount"`
 	TotalRows       int64        `json:"totalRows"`
 	TopTables       []TableBrief `json:"topTables"`
+}
+
+// Connection is one client session open right now on a database.
+type Connection struct {
+	PID         int64      `json:"pid"`
+	User        string     `json:"user"`
+	Application string     `json:"application"`
+	State       string     `json:"state"`
+	ConnectedAt time.Time  `json:"connectedAt"`
+	StateSince  *time.Time `json:"stateSince,omitempty"`
+	// Query is only filled while a statement is running or a transaction
+	// is open, and truncated.
+	Query string `json:"query,omitempty"`
 }
 
 // TableBrief is one row of the "largest tables" list.
@@ -199,4 +219,60 @@ type ConnectionInfo struct {
 type Credentials struct {
 	ConnectionInfo
 	Password string `json:"password"`
+}
+
+// DataColumn describes a column in the data editor.
+type DataColumn struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Nullable   bool   `json:"nullable"`
+	PrimaryKey bool   `json:"primaryKey"`
+	HasDefault bool   `json:"hasDefault"`
+	// Generated columns (GENERATED ALWAYS) can never be written.
+	Generated bool `json:"generated"`
+}
+
+// TableData is one page of rows for the data editor. Values use the
+// PostgreSQL text representation; nil means NULL.
+type TableData struct {
+	Columns  []DataColumn `json:"columns"`
+	Rows     [][]*string  `json:"rows"`
+	Total    int64        `json:"total"`
+	Page     int          `json:"page"`
+	PageSize int          `json:"pageSize"`
+	// Editable is false for views and for tables without a primary key,
+	// because a row could not be addressed unambiguously.
+	Editable bool `json:"editable"`
+}
+
+// RowValues maps column names to text values (nil = NULL).
+type RowValues map[string]*string
+
+// ClientUser is a self-service tenant: someone who registers (or whom the
+// owner adds directly) to manage only their own databases through the
+// reduced "panel de usuario" — never the admin panel, and never another
+// client's data. NeverExpires/MaxIdleDays are the owner-set exception
+// applied to every database this client owns that has no exception of its
+// own (see expiry.ApplyClientOverride).
+type ClientUser struct {
+	ID            int64      `json:"id"`
+	Username      string     `json:"username"`
+	PasswordHash  string     `json:"-"`
+	NeverExpires  bool       `json:"neverExpires"`
+	MaxIdleDays   *int       `json:"maxIdleDays,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	CreatedBy     string     `json:"createdBy,omitempty"` // "" = self-registered
+	UpdatedAt     time.Time  `json:"updatedAt"`
+	UpdatedBy     string     `json:"updatedBy,omitempty"`
+	DatabaseCount int        `json:"databaseCount,omitempty"`
+	LastLoginAt   *time.Time `json:"lastLoginAt,omitempty"`
+}
+
+// PlatformSettings overrides the .env inactivity policy at runtime. A nil
+// field means "use the .env value"; only the owner can change this.
+type PlatformSettings struct {
+	ExpirationDays   *int      `json:"expirationDays"`
+	ExpiringSoonDays *int      `json:"expiringSoonDays"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+	UpdatedBy        string    `json:"updatedBy,omitempty"`
 }

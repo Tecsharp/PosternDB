@@ -21,6 +21,8 @@ const settings = {
   localDbPort: 25432,
   clientLocalPort: 5432,
   notifyChannels: ['webhook'],
+  allowSelfRegister: true,
+  maxDatabasesPerClient: 3,
 }
 
 type Row = Record<string, unknown> & { slug: string; status: string; id: number }
@@ -46,6 +48,7 @@ let databases: Row[] = [
   mk(3, 'triburide', -70, -1.5, 'activa', { maxIdleDays: 90, expiresAt: iso(88) }),
   mk(2, 'lubexy-staging', -60, -26, 'por_expirar'),
   mk(1, 'demo-feria', -90, -45, 'expirada', { expiredAt: iso(-15), archivedAs: 'pdbarch_demo_feria_20261018' }),
+  mk(6, 'ana-tienda', -5, -0.2, 'activa', { clientUserId: 1 }),
 ]
 
 const col = (name: string, type: string, extra: Record<string, unknown> = {}) => ({ name, type, nullable: true, primaryKey: false, ...extra })
@@ -75,6 +78,11 @@ const schema = {
   ],
 }
 
+const liveConnections = [
+  { pid: 4121, user: 'pdb_taller', application: 'HikariPool-1', state: 'idle', connectedAt: iso(-0.3) },
+  { pid: 4188, user: 'pdb_taller', application: 'psql', state: 'active', connectedAt: iso(-0.01), query: 'SELECT count(*) FROM miembros WHERE activo' },
+  { pid: 4203, user: 'pdb_taller_ro', application: 'DBeaver 24.1', state: 'idle in transaction', connectedAt: iso(-0.05), query: 'UPDATE miembros SET activo = true WHERE id = 3' },
+]
 const stats = {
   sizeBytes: 9_420_800,
   openConnections: 4,
@@ -93,7 +101,10 @@ let jobs = [
   { id: 1, kind: 'clone', status: 'failed', slug: 'taller-motos', error: 'pg_restore: error: could not connect', requestedBy: 'admin', createdAt: iso(-2) },
 ]
 let templates = [
-  { id: 1, name: 'Contactos (demo)', description: 'Tabla de contactos con datos de ejemplo.', sql: 'CREATE TABLE contactos (\n  id BIGSERIAL PRIMARY KEY,\n  nombre TEXT NOT NULL\n);', updatedAt: iso(-3) },
+  { id: 1, name: 'Contactos (demo)', description: 'Tabla de contactos con datos de ejemplo.', sql: 'CREATE TABLE contactos (\n  id BIGSERIAL PRIMARY KEY,\n  nombre TEXT NOT NULL\n);', shared: true, updatedAt: iso(-3) },
+  { id: 2, name: 'Tareas (to-do)', description: 'Lista de tareas con estado y fecha límite.', sql: 'CREATE TABLE tareas (\n  id BIGSERIAL PRIMARY KEY,\n  titulo TEXT NOT NULL,\n  completada BOOLEAN NOT NULL DEFAULT false\n);', shared: true, updatedAt: iso(-3) },
+  { id: 3, name: 'Tienda en línea', description: 'Productos, clientes y pedidos con sus líneas.', sql: 'CREATE TABLE productos (...);\nCREATE TABLE clientes (...);\nCREATE TABLE pedidos (...);', shared: true, updatedAt: iso(-3) },
+  { id: 4, name: 'Esquema interno', description: 'Solo para administradores.', sql: 'CREATE TABLE interna (id int);', shared: false, updatedAt: iso(-3) },
 ]
 let admins = [
   { id: 0, username: 'admin', role: 'owner', createdAt: iso(-30), createdBy: '.env', bootstrap: true },
@@ -110,7 +121,27 @@ const audit = [
   { id: 1, occurredAt: iso(-15), actor: 'backup-sidecar', action: 'backup_completed', target: 'demo-feria', details: { file: '/backups/pdbarch_demo_feria_20261018.dump' } },
 ]
 
+const dataRows: Record<string, (string | null)[][]> = {}
+let globalExpiry: { expirationDays: number | null; expiringSoonDays: number | null; updatedAt: string; updatedBy?: string } = {
+  expirationDays: null, expiringSoonDays: null, updatedAt: new Date().toISOString(),
+}
+type ClientRow = {
+  id: number
+  username: string
+  neverExpires: boolean
+  maxIdleDays?: number
+  createdAt: string
+  createdBy: string
+  updatedAt: string
+  databaseCount: number
+  lastLoginAt?: string
+}
+let clients: ClientRow[] = [{ id: 1, username: 'ana', neverExpires: false, createdAt: iso(-20), createdBy: '', updatedAt: iso(-20), databaseCount: 1, lastLoginAt: iso(-0.5) }]
+let nextClientId = 2
+
 let loggedIn = false
+let currentRole: 'owner' | 'client' = 'owner'
+let currentClientId = 0
 const creds = (row: Row, username = row.username as string) => ({
   hostname: row.hostname, database: row.database, username, host: 'localhost', port: 5432, localMode: false,
   password: 'q7Rk2mZp9XwL4vNc8BsT3hYd6FjG1aEu',
@@ -144,17 +175,51 @@ export function mockApi(): Plugin {
           const { username, password } = await readJSON(req)
           if (username === 'admin' && password === 'admin') {
             loggedIn = true
+            currentRole = 'owner'
             return send(res, 200, { user: 'admin', role: 'owner' })
           }
+          const client = clients.find((c) => c.username === username)
+          if (client && password === 'ana-password-123') {
+            loggedIn = true
+            currentRole = 'client'
+            currentClientId = client.id
+            return send(res, 200, { user: client.username, role: 'client' })
+          }
           return send(res, 401, { error: 'usuario o contraseña incorrectos' })
+        }
+        if (path === '/auth/config') return send(res, 200, { allowSelfRegister: settings.allowSelfRegister })
+        if (path === '/auth/register') {
+          const { username, password } = (await readJSON(req)) as { username: string; password: string }
+          if (!settings.allowSelfRegister) return send(res, 400, { error: 'el registro de usuarios está desactivado' })
+          if (clients.some((c) => c.username === username)) return send(res, 409, { error: 'ya existe un elemento con ese nombre' })
+          if (password.length < 12) return send(res, 400, { error: 'la contraseña debe tener al menos 12 caracteres' })
+          const c: ClientRow = { id: nextClientId++, username: String(username), neverExpires: false, createdAt: new Date().toISOString(), createdBy: '', updatedAt: new Date().toISOString(), databaseCount: 0 }
+          clients = [...clients, c]
+          loggedIn = true
+          currentRole = 'client'
+          currentClientId = c.id
+          return send(res, 201, { user: c.username, role: 'client' })
         }
         if (path === '/auth/logout') {
           loggedIn = false
           return send(res, 204)
         }
         if (!loggedIn) return send(res, 401, { error: 'Unauthorized' })
-        if (path === '/auth/session') return send(res, 200, { user: 'admin', role: 'owner', bootstrap: true })
-        if (path === '/settings') return send(res, 200, settings)
+        if (path === '/auth/session') {
+          if (currentRole === 'client') {
+            const c = clients.find((x) => x.id === currentClientId)
+            return send(res, 200, { user: c?.username ?? 'cliente', role: 'client', bootstrap: false })
+          }
+          return send(res, 200, { user: 'admin', role: 'owner', bootstrap: true })
+        }
+        if (path === '/me/password' && m === 'POST') return send(res, 204)
+        if (path === '/settings') return send(res, 200, { ...settings, expirationDays: globalExpiry.expirationDays ?? settings.expirationDays, expiringSoonDays: globalExpiry.expiringSoonDays ?? settings.expiringSoonDays })
+        if (path === '/settings/expiry' && m === 'GET') return send(res, 200, globalExpiry)
+        if (path === '/settings/expiry' && m === 'PUT') {
+          const { expirationDays, expiringSoonDays } = (await readJSON(req)) as { expirationDays: number | null; expiringSoonDays: number | null }
+          globalExpiry = { expirationDays, expiringSoonDays, updatedAt: new Date().toISOString(), updatedBy: 'admin' }
+          return send(res, 200, globalExpiry)
+        }
         if (path === '/audit') return send(res, 200, { entries: audit })
         if (path === '/notifications/test') return send(res, 204)
         if (path === '/backups' && m === 'GET') return send(res, 200, { backups: jobs.filter((j) => j.status === 'done') })
@@ -174,10 +239,77 @@ export function mockApi(): Plugin {
             templates = templates.filter((t) => t.id !== Number(parts[1]))
             return send(res, 204)
           }
-          const body = (await readJSON(req)) as { name: string; description: string; sql: string }
+          const body = (await readJSON(req)) as { name: string; description: string; sql: string; shared: boolean }
           const t = { id: parts[1] ? Number(parts[1]) : nextId++, ...body, updatedAt: new Date().toISOString() }
           templates = [...templates.filter((x) => x.id !== t.id), t]
           return send(res, parts[1] ? 200 : 201, t)
+        }
+        if (path === '/clients' && m === 'GET') return send(res, 200, { clients })
+        if (path === '/clients' && m === 'POST') {
+          const { username } = (await readJSON(req)) as { username: string }
+          const c: ClientRow = { id: nextClientId++, username: String(username), neverExpires: false, createdAt: new Date().toISOString(), createdBy: 'admin', updatedAt: new Date().toISOString(), databaseCount: 0 }
+          clients = [...clients, c]
+          return send(res, 201, { client: c, password: 'Zx81PqLm0vRt5Kd2Wn7Y' })
+        }
+        if (parts[0] === 'clients' && parts[1]) {
+          const id = Number(parts[1])
+          if (parts[2] === 'expiry' && m === 'PUT') {
+            const { neverExpires, maxIdleDays } = (await readJSON(req)) as { neverExpires: boolean; maxIdleDays: number | null }
+            clients = clients.map((c) => (c.id === id ? { ...c, neverExpires, maxIdleDays: maxIdleDays ?? undefined, updatedAt: new Date().toISOString() } : c))
+            return send(res, 200, clients.find((c) => c.id === id))
+          }
+          if (m === 'DELETE') {
+            if (!clients.some((c) => c.id === id)) return send(res, 404, { error: 'no encontrado' })
+            clients = clients.filter((c) => c.id !== id)
+            return send(res, 204)
+          }
+        }
+        if (path === '/me/templates') return send(res, 200, { templates: templates.filter((t) => t.shared) })
+        if (parts[0] === 'me' && parts[1] === 'databases') {
+          const mine = () => databases.filter((d) => d.clientUserId === currentClientId)
+          if (!parts[2] && m === 'GET') return send(res, 200, { databases: mine() })
+          if (!parts[2] && m === 'POST') {
+            const { name } = await readJSON(req)
+            if (databases.some((d) => d.slug === name)) return send(res, 409, { error: 'ya existe un elemento con ese nombre' })
+            const row = mk(nextId++, String(name), 0, 0, 'activa', { clientUserId: currentClientId })
+            databases = [row, ...databases]
+            return send(res, 201, creds(row))
+          }
+          const row = mine().find((d) => d.slug === parts[2])
+          if (!row) return send(res, 404, { error: 'no encontrado' })
+          const sub = parts[3]
+          if (!sub && m === 'GET') return send(res, 200, row)
+          if (!sub && m === 'DELETE') {
+            databases = databases.filter((d) => d !== row)
+            return send(res, 204)
+          }
+          if (sub === 'connection') return send(res, 200, { ...creds(row), password: undefined })
+          if (sub === 'password') return send(res, 200, creds(row))
+          if (sub === 'live-connections') return send(res, 200, { connections: liveConnections })
+          if (sub === 'stats') return send(res, 200, stats)
+          if (sub === 'schema') return send(res, 200, row.slug === 'taller-motos' || row.slug === 'ana-tienda' ? schema : { schemas: [], tables: [] })
+          if (sub === 'tables' && parts[6] === 'data') {
+            const t = schema.tables.find((x) => x.name === parts[5])
+            if (!t) return send(res, 400, { error: 'la tabla no existe' })
+            const cols = (t.columns as { name: string; type: string; nullable: boolean; primaryKey: boolean; default?: string }[]).map((c) => ({
+              name: c.name, type: c.type, nullable: c.nullable, primaryKey: c.primaryKey, hasDefault: Boolean(c.default), generated: false,
+            }))
+            const rows = (dataRows[`me:${t.name}`] ??= Array.from({ length: Math.min(t.rows, 120) }, (_, i) =>
+              cols.map((c) => (c.primaryKey ? String(i + 1) : c.name.endsWith('_id') ? String((i % 12) + 1) : c.type === 'text' ? (i % 7 === 3 ? null : `${c.name} ${i + 1}`) : c.type.startsWith('timestamp') ? '2026-10-0' + ((i % 9) + 1) + ' 10:00:00+00' : String(i * 3))),
+            ))
+            if (m === 'GET') {
+              const q = new URL(req.url ?? '', 'http://x').searchParams
+              const page = Number(q.get('page') ?? 1)
+              return send(res, 200, { columns: cols, rows: rows.slice((page - 1) * 50, page * 50), total: rows.length, page, pageSize: 50, editable: t.kind === 'table' })
+            }
+            const body = (await readJSON(req)) as { key?: Record<string, string>; values?: Record<string, string | null> }
+            const idx = rows.findIndex((r) => body.key && r[0] === body.key.id)
+            if (m === 'POST') rows.push(cols.map((c, i) => (c.primaryKey ? String(rows.length + 1) : body.values?.[c.name] ?? (i ? null : ''))))
+            if (m === 'PATCH' && idx >= 0) cols.forEach((c, i) => { if (body.values && c.name in body.values) rows[idx][i] = body.values[c.name] })
+            if (m === 'DELETE' && idx >= 0) rows.splice(idx, 1)
+            return send(res, 204)
+          }
+          if (sub === 'tables' && parts[6] === 'count') return send(res, 200, { rows: 349 })
         }
         if (path === '/admins' && m === 'GET') return send(res, 200, { admins })
         if (path === '/admins' && m === 'POST') {
@@ -214,6 +346,7 @@ export function mockApi(): Plugin {
           }
           if (sub === 'connection') return send(res, 200, { ...creds(row), password: undefined })
           if (sub === 'password') return send(res, 200, creds(row))
+          if (sub === 'live-connections') return send(res, 200, { connections: liveConnections })
           if (sub === 'stats') return send(res, 200, stats)
           if (sub === 'schema') return send(res, 200, row.slug === 'taller-motos' ? schema : { schemas: [], tables: [] })
           if (sub === 'users' && m === 'GET') return send(res, 200, { users: row.slug === 'taller-motos' ? users : [] })
@@ -239,6 +372,27 @@ export function mockApi(): Plugin {
             const { sql } = await readJSON(req)
             if (String(sql).toLowerCase().startsWith('delete')) return send(res, 400, { error: 'ERROR: cannot execute DELETE in a read-only transaction (SQLSTATE 25006)' })
             return send(res, 200, { columns: ['id', 'nombre', 'email', 'rol'], rows: [['1', 'Ana López', 'ana@example.com', 'presidenta'], ['2', 'Bruno Díaz', null, 'miembro'], ['3', 'Carla Ruiz', 'carla@example.com', 'tesorera']], rowCount: 3, truncated: false, durationMs: 4 })
+          }
+          if (sub === 'tables' && parts[5] === 'data') {
+            const t = schema.tables.find((x) => x.name === parts[4])
+            if (!t) return send(res, 400, { error: 'la tabla no existe' })
+            const cols = (t.columns as { name: string; type: string; nullable: boolean; primaryKey: boolean; default?: string }[]).map((c) => ({
+              name: c.name, type: c.type, nullable: c.nullable, primaryKey: c.primaryKey, hasDefault: Boolean(c.default), generated: false,
+            }))
+            const rows = (dataRows[t.name] ??= Array.from({ length: Math.min(t.rows, 120) }, (_, i) =>
+              cols.map((c) => (c.primaryKey ? String(i + 1) : c.name.endsWith('_id') ? String((i % 12) + 1) : c.type === 'text' ? (i % 7 === 3 ? null : `${c.name} ${i + 1}`) : c.type.startsWith('timestamp') ? '2026-10-0' + ((i % 9) + 1) + ' 10:00:00+00' : String(i * 3))),
+            ))
+            if (m === 'GET') {
+              const q = new URL(req.url ?? '', 'http://x').searchParams
+              const page = Number(q.get('page') ?? 1)
+              return send(res, 200, { columns: cols, rows: rows.slice((page - 1) * 50, page * 50), total: rows.length, page, pageSize: 50, editable: t.kind === 'table' })
+            }
+            const body = (await readJSON(req)) as { key?: Record<string, string>; values?: Record<string, string | null> }
+            const idx = rows.findIndex((r) => body.key && r[0] === body.key.id)
+            if (m === 'POST') rows.push(cols.map((c, i) => (c.primaryKey ? String(rows.length + 1) : body.values?.[c.name] ?? (i ? null : ''))))
+            if (m === 'PATCH' && idx >= 0) cols.forEach((c, i) => { if (body.values && c.name in body.values) rows[idx][i] = body.values[c.name] })
+            if (m === 'DELETE' && idx >= 0) rows.splice(idx, 1)
+            return send(res, 204)
           }
           if (sub === 'tables' && parts[5] === 'count') return send(res, 200, { rows: 349 })
           if (sub === 'tables') return send(res, 200, { columns: ['id', 'nombre', 'email'], rows: [['1', 'Ana López', 'ana@example.com'], ['2', 'Bruno Díaz', null]], rowCount: 2, truncated: false, durationMs: 2 })

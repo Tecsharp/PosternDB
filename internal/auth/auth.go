@@ -1,6 +1,16 @@
 // Package auth implements panel authentication: credential checks against
 // ADMIN_USER / ADMIN_PASSWORD, JWT sessions in an HttpOnly cookie, CSRF
 // protection and per-IP login rate limiting.
+//
+// Three principal tiers share one login endpoint and one session cookie:
+//
+//  1. the bootstrap owner (ADMIN_USER / ADMIN_PASSWORD from .env);
+//  2. stored administrators (internal/admins), role owner/admin/viewer —
+//     together these unlock the admin panel (/api/* routes);
+//  3. client users (internal/clients), role "client" — unlocks only the
+//     reduced "panel de usuario" (/api/me/* routes). config.RoleClient is
+//     never part of the admin role hierarchy (see roleRank), so a client
+//     session can never pass RequireRole and reach an admin route.
 package auth
 
 import (
@@ -14,6 +24,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/tecsharp/posterndb/internal/config"
+	"github.com/tecsharp/posterndb/internal/model"
 )
 
 // ErrInvalidSession covers missing, expired, tampered or foreign tokens.
@@ -21,10 +32,13 @@ var ErrInvalidSession = errors.New("invalid session")
 
 type ctxKey struct{}
 
-// Identity is the authenticated administrator of a request.
+// Identity is the authenticated principal of a request.
 type Identity struct {
 	Username string `json:"user"`
 	Role     string `json:"role"`
+	// ClientUserID is set only for Role == config.RoleClient: the row id in
+	// client_users, needed to look up "my databases" by id, not by name.
+	ClientUserID *int64 `json:"-"`
 }
 
 // AdminStore authenticates administrators stored in the database (the
@@ -34,7 +48,13 @@ type AdminStore interface {
 	RoleOf(ctx context.Context, username string) (string, error)
 }
 
-// Authenticator validates admin credentials and manages session tokens.
+// ClientStore authenticates self-service client users (internal/clients).
+type ClientStore interface {
+	Authenticate(ctx context.Context, username, password string) (model.ClientUser, bool, error)
+	Exists(ctx context.Context, username string) (id int64, ok bool, err error)
+}
+
+// Authenticator validates credentials and manages session tokens.
 type Authenticator struct {
 	bootstrapUser string
 	userHash      [32]byte
@@ -43,11 +63,12 @@ type Authenticator struct {
 	ttl           time.Duration
 	now           func() time.Time
 	admins        AdminStore
+	clients       ClientStore
 }
 
 // New builds an Authenticator from the configured bootstrap credentials.
-// admins may be nil when only the bootstrap owner exists.
-func New(user, password, secret string, ttl time.Duration, admins AdminStore) *Authenticator {
+// admins/clients may be nil when that tier is not wired up (tests).
+func New(user, password, secret string, ttl time.Duration, admins AdminStore, clients ClientStore) *Authenticator {
 	return &Authenticator{
 		bootstrapUser: user,
 		userHash:      sha256.Sum256([]byte(user)),
@@ -56,6 +77,7 @@ func New(user, password, secret string, ttl time.Duration, admins AdminStore) *A
 		ttl:           ttl,
 		now:           time.Now,
 		admins:        admins,
+		clients:       clients,
 	}
 }
 
@@ -64,16 +86,35 @@ func (a *Authenticator) IsBootstrap(username string) bool {
 	return username == a.bootstrapUser
 }
 
-// Login checks the bootstrap owner first, then stored administrators.
+// Login checks the bootstrap owner, then stored administrators, then client
+// users — whichever tier has a matching username and password.
 func (a *Authenticator) Login(ctx context.Context, username, password string) (Identity, bool, error) {
 	if a.CheckCredentials(username, password) {
 		return Identity{Username: username, Role: config.RoleOwner}, true, nil
 	}
-	if a.admins == nil || a.IsBootstrap(username) {
+	if a.IsBootstrap(username) {
 		return Identity{}, false, nil
 	}
-	role, ok, err := a.admins.Authenticate(ctx, username, password)
-	return Identity{Username: username, Role: role}, ok, err
+	if a.admins != nil {
+		role, ok, err := a.admins.Authenticate(ctx, username, password)
+		if err != nil {
+			return Identity{}, false, err
+		}
+		if ok {
+			return Identity{Username: username, Role: role}, true, nil
+		}
+	}
+	if a.clients != nil {
+		u, ok, err := a.clients.Authenticate(ctx, username, password)
+		if err != nil {
+			return Identity{}, false, err
+		}
+		if ok {
+			id := u.ID
+			return Identity{Username: username, Role: config.RoleClient, ClientUserID: &id}, true, nil
+		}
+	}
+	return Identity{}, false, nil
 }
 
 // CheckCredentials compares in constant time. Hashing first gives both sides
@@ -90,7 +131,7 @@ func (a *Authenticator) CheckCredentials(user, password string) bool {
 
 // Issue returns a signed HS256 token for subject. The role is not stored in
 // the token: it is resolved on every request so demoting or deleting an
-// administrator takes effect immediately.
+// administrator or client takes effect immediately.
 func (a *Authenticator) Issue(subject string) (string, time.Time, error) {
 	now := a.now()
 	exp := now.Add(a.ttl)
@@ -165,14 +206,17 @@ func (a *Authenticator) identify(r *http.Request) (Identity, error) {
 	if a.IsBootstrap(subject) {
 		return Identity{Username: subject, Role: config.RoleOwner}, nil
 	}
-	if a.admins == nil {
-		return Identity{}, ErrInvalidSession
+	if a.admins != nil {
+		if role, err := a.admins.RoleOf(r.Context(), subject); err == nil {
+			return Identity{Username: subject, Role: role}, nil
+		}
 	}
-	role, err := a.admins.RoleOf(r.Context(), subject)
-	if err != nil {
-		return Identity{}, ErrInvalidSession
+	if a.clients != nil {
+		if id, ok, err := a.clients.Exists(r.Context(), subject); err == nil && ok {
+			return Identity{Username: subject, Role: config.RoleClient, ClientUserID: &id}, nil
+		}
 	}
-	return Identity{Username: subject, Role: role}, nil
+	return Identity{}, ErrInvalidSession
 }
 
 // FromContext returns the identity stored by Middleware.
@@ -188,7 +232,9 @@ func Subject(ctx context.Context) string {
 
 var roleRank = map[string]int{config.RoleViewer: 1, config.RoleAdmin: 2, config.RoleOwner: 3}
 
-// Allows reports whether role is at least min.
+// Allows reports whether role is at least min. config.RoleClient is never in
+// roleRank, so it is always false here — a client session can never satisfy
+// an admin RequireRole check, by construction, not by convention.
 func Allows(role, min string) bool {
 	return roleRank[role] >= roleRank[min] && roleRank[min] > 0
 }
@@ -204,6 +250,19 @@ func RequireRole(min string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// RequireClient answers 403 unless the identity is a client user. It is an
+// exact match, not a hierarchy level: an admin or owner hitting /api/me/*
+// is refused rather than silently treated as a client.
+func RequireClient(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if FromContext(r.Context()).Role != config.RoleClient {
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // RequireCSRFHeader blocks state-changing requests that lack the custom

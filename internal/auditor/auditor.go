@@ -47,6 +47,15 @@ type ActivitySource interface {
 type Lifecycle interface {
 	Expire(ctx context.Context, db model.ClientDatabase, actor string) error
 	RecordAudit(ctx context.Context, actor, action, target string, details map[string]any)
+	// EffectivePolicy merges the .env defaults with the owner's runtime
+	// override (Ajustes -> Expiración), falling back to the .env defaults
+	// on read error.
+	EffectivePolicy(ctx context.Context) expiry.Policy
+	// ClientOverrides lists every client's exception, keyed by
+	// client_users.id, so each database can apply its owning client's
+	// exception (see expiry.ApplyClientOverride) without a query per
+	// database.
+	ClientOverrides(ctx context.Context) map[int64]model.ClientUser
 }
 
 // Auditor wires the dependencies together.
@@ -55,15 +64,14 @@ type Auditor struct {
 	activity ActivitySource
 	life     Lifecycle
 	notifier Notifier
-	policy   expiry.Policy
 	interval time.Duration
 	now      func() time.Time
 	log      *slog.Logger
 }
 
 // New builds an Auditor.
-func New(meta Metadata, activity ActivitySource, life Lifecycle, notifier Notifier, policy expiry.Policy, interval time.Duration, logger *slog.Logger) *Auditor {
-	return &Auditor{meta: meta, activity: activity, life: life, notifier: notifier, policy: policy, interval: interval, now: time.Now, log: logger}
+func New(meta Metadata, activity ActivitySource, life Lifecycle, notifier Notifier, interval time.Duration, logger *slog.Logger) *Auditor {
+	return &Auditor{meta: meta, activity: activity, life: life, notifier: notifier, interval: interval, now: time.Now, log: logger}
 }
 
 // Result summarises one audit run.
@@ -105,9 +113,11 @@ func (a *Auditor) RunOnce(ctx context.Context) Result {
 		return Result{Errors: 1}
 	}
 	now := a.now()
+	policy := a.life.EffectivePolicy(ctx)
+	overrides := a.life.ClientOverrides(ctx)
 	for _, db := range dbs {
 		res.Checked++
-		a.inspect(ctx, db, snapshot[db.DBName], now, &res)
+		a.inspect(ctx, expiry.ApplyClientOverride(db, overrides), snapshot[db.DBName], policy, now, &res)
 	}
 	a.life.RecordAudit(ctx, config.ActorAuditor, config.ActionAuditRun, "", map[string]any{
 		"checked": res.Checked, "activeSeen": res.Active, "expired": res.Expired, "warned": res.Warned, "errors": res.Errors,
@@ -115,7 +125,7 @@ func (a *Auditor) RunOnce(ctx context.Context) Result {
 	return res
 }
 
-func (a *Auditor) inspect(ctx context.Context, db model.ClientDatabase, act model.Activity, now time.Time, res *Result) {
+func (a *Auditor) inspect(ctx context.Context, db model.ClientDatabase, act model.Activity, policy expiry.Policy, now time.Time, res *Result) {
 	seen, err := a.refreshActivity(ctx, db, act, now)
 	if err != nil {
 		res.Errors++
@@ -126,11 +136,11 @@ func (a *Auditor) inspect(ctx context.Context, db model.ClientDatabase, act mode
 		res.Active++
 		return
 	}
-	if a.policy.InWarningWindow(db, now) && db.ExpiryWarnedAt == nil {
-		a.warn(ctx, db, now, res)
+	if policy.InWarningWindow(db, now) && db.ExpiryWarnedAt == nil {
+		a.warn(ctx, db, policy, now, res)
 		return
 	}
-	if !a.policy.IsExpired(db, now) {
+	if !policy.IsExpired(db, now) {
 		return
 	}
 	if err := a.life.Expire(ctx, db, config.ActorAuditor); err != nil {
@@ -147,8 +157,8 @@ func (a *Auditor) inspect(ctx context.Context, db model.ClientDatabase, act mode
 }
 
 // warn sends the "expiring soon" notice once per idle period.
-func (a *Auditor) warn(ctx context.Context, db model.ClientDatabase, now time.Time, res *Result) {
-	at, _ := a.policy.ExpiresAt(db)
+func (a *Auditor) warn(ctx context.Context, db model.ClientDatabase, policy expiry.Policy, now time.Time, res *Result) {
+	at, _ := policy.ExpiresAt(db)
 	days := int(at.Sub(now).Hours()/24) + 1
 	sent := a.notify(ctx, notify.Message{
 		Event: "expiring", Database: db.Slug,

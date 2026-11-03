@@ -89,9 +89,35 @@ func (s *server) extend(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, "extend expiry", db, err)
 }
 
+// ---- global inactivity policy (owner only) ------------------------------------
+
+func (s *server) getGlobalExpiry(w http.ResponseWriter, r *http.Request) {
+	st, err := s.Databases.GlobalSettings(r.Context())
+	s.respond(w, "get global expiry", st, err)
+}
+
+type globalExpiryRequest struct {
+	ExpirationDays   *int `json:"expirationDays"`
+	ExpiringSoonDays *int `json:"expiringSoonDays"`
+}
+
+func (s *server) setGlobalExpiry(w http.ResponseWriter, r *http.Request) {
+	var req globalExpiryRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	st, err := s.Databases.SetGlobalSettings(r.Context(), req.ExpirationDays, req.ExpiringSoonDays, actor(r))
+	s.respond(w, "set global expiry", st, err)
+}
+
 func (s *server) stats(w http.ResponseWriter, r *http.Request) {
 	st, err := s.Databases.Stats(r.Context(), urlSlug(r))
 	s.respond(w, "stats", st, err)
+}
+
+func (s *server) liveConnections(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Databases.Connections(r.Context(), urlSlug(r))
+	s.respond(w, "live connections", map[string]any{"connections": list}, err)
 }
 
 func (s *server) schema(w http.ResponseWriter, r *http.Request) {

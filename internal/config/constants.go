@@ -33,6 +33,8 @@ const (
 	EnvLocalMode             = "LOCAL_MODE"
 	EnvLocalDBPort           = "LOCAL_DB_PORT"
 	EnvBackupDir             = "BACKUP_DIR"
+	EnvAllowSelfRegister     = "ALLOW_SELF_REGISTER"
+	EnvMaxDatabasesPerClient = "MAX_DATABASES_PER_CLIENT"
 	EnvNotifyWebhookURL      = "NOTIFY_WEBHOOK_URL"
 	EnvNotifyEmailTo         = "NOTIFY_EMAIL_TO"
 	EnvSMTPHost              = "SMTP_HOST"
@@ -62,6 +64,9 @@ const (
 	DefaultBackupDir          = "/backups"
 	DefaultSMTPPort           = 587
 	LocalHostname             = "localhost"
+	DefaultAllowSelfRegister  = true
+	DefaultMaxDBsPerClient    = 3
+	MinClientPasswordLength   = 12
 )
 
 // Panel administrator roles, from most to least privileged.
@@ -70,6 +75,11 @@ const (
 	RoleAdmin  = "admin"
 	RoleViewer = "viewer"
 )
+
+// RoleClient identifies a self-service tenant (ClientUser), never part of
+// the admin role hierarchy above: it only ever unlocks the reduced
+// "panel de usuario" (/api/me/*), never an admin route.
+const RoleClient = "client"
 
 // Access levels for additional database users.
 const (
@@ -105,9 +115,13 @@ const (
 	ConsoleRowLimit  = 500
 	ConsoleTimeout   = 10 * time.Second
 	PreviewRowLimit  = 50
+	DataPageSize     = 50
+	MaxDataPageSize  = 200
 	MaxQueryLength   = 20000
 	MaxTemplateSQL   = 200000
-	ExtraUserSep     = "__"
+	// MaxConnectionQueryChars truncates the running statement shown in the live connections list.
+	MaxConnectionQueryChars = 160
+	ExtraUserSep            = "__"
 )
 
 // Client database lifecycle states as stored in the metadata table.
@@ -128,36 +142,45 @@ const (
 
 // Audit log actions.
 const (
-	ActionDBCreated        = "db_created"
-	ActionDBDeleted        = "db_deleted"
-	ActionDBExpired        = "db_expired"
-	ActionDBArchived       = "db_archived_for_backup"
-	ActionDBDropped        = "db_dropped"
-	ActionRouteCreated     = "route_created"
-	ActionRouteRemoved     = "route_removed"
-	ActionActivitySeen     = "activity_detected"
-	ActionAuditRun         = "inactivity_audit_run"
-	ActionLoginSuccess     = "login_success"
-	ActionLoginFailed      = "login_failed"
-	ActionHostnameMigrated = "hostname_migrated"
-	ActionProvisionFailed  = "provision_failed"
-	ActionPasswordReset    = "password_reset"
-	ActionExpiryChanged    = "expiry_changed"
-	ActionUserCreated      = "db_user_created"
-	ActionUserDeleted      = "db_user_deleted"
-	ActionBackupRequested  = "backup_requested"
-	ActionRestoreRequested = "restore_requested"
-	ActionCloneRequested   = "clone_requested"
-	ActionBackupDeleted    = "backup_deleted"
-	ActionTemplateSaved    = "template_saved"
-	ActionTemplateDeleted  = "template_deleted"
-	ActionTemplateApplied  = "template_applied"
-	ActionAdminCreated     = "admin_created"
-	ActionAdminUpdated     = "admin_updated"
-	ActionAdminDeleted     = "admin_deleted"
-	ActionQueryExecuted    = "query_executed"
-	ActionExpiryWarned     = "expiry_warning_sent"
-	ActionNotifyFailed     = "notification_failed"
+	ActionDBCreated             = "db_created"
+	ActionDBDeleted             = "db_deleted"
+	ActionDBExpired             = "db_expired"
+	ActionDBArchived            = "db_archived_for_backup"
+	ActionDBDropped             = "db_dropped"
+	ActionRouteCreated          = "route_created"
+	ActionRouteRemoved          = "route_removed"
+	ActionActivitySeen          = "activity_detected"
+	ActionAuditRun              = "inactivity_audit_run"
+	ActionLoginSuccess          = "login_success"
+	ActionLoginFailed           = "login_failed"
+	ActionHostnameMigrated      = "hostname_migrated"
+	ActionProvisionFailed       = "provision_failed"
+	ActionPasswordReset         = "password_reset"
+	ActionExpiryChanged         = "expiry_changed"
+	ActionUserCreated           = "db_user_created"
+	ActionUserDeleted           = "db_user_deleted"
+	ActionBackupRequested       = "backup_requested"
+	ActionRestoreRequested      = "restore_requested"
+	ActionCloneRequested        = "clone_requested"
+	ActionBackupDeleted         = "backup_deleted"
+	ActionTemplateSaved         = "template_saved"
+	ActionTemplateDeleted       = "template_deleted"
+	ActionTemplateApplied       = "template_applied"
+	ActionAdminCreated          = "admin_created"
+	ActionAdminUpdated          = "admin_updated"
+	ActionAdminDeleted          = "admin_deleted"
+	ActionQueryExecuted         = "query_executed"
+	ActionExpiryWarned          = "expiry_warning_sent"
+	ActionNotifyFailed          = "notification_failed"
+	ActionRowInserted           = "row_inserted"
+	ActionRowUpdated            = "row_updated"
+	ActionRowDeleted            = "row_deleted"
+	ActionGlobalExpiryChanged   = "global_expiry_changed"
+	ActionClientRegistered      = "client_registered"
+	ActionClientCreated         = "client_created"
+	ActionClientDeleted         = "client_deleted"
+	ActionClientExpiryChanged   = "client_expiry_changed"
+	ActionClientPasswordChanged = "client_password_changed"
 )
 
 // Audit actor names.
@@ -179,45 +202,72 @@ const (
 
 // HTTP routes.
 const (
-	RouteHealth       = "/health"
-	RouteAPI          = "/api"
-	RouteLogin        = "/auth/login"
-	RouteLogout       = "/auth/logout"
-	RouteSession      = "/auth/session"
-	RouteDatabases    = "/databases"
-	RouteAuditLog     = "/audit"
-	RouteSettings     = "/settings"
-	RouteAuthPassword = "/auth/password"
-	RouteDatabase     = "/databases/{slug}"
-	RouteConnection   = "/databases/{slug}/connection"
-	RouteDBPassword   = "/databases/{slug}/password"
-	RouteExpiry       = "/databases/{slug}/expiry"
-	RouteExtend       = "/databases/{slug}/extend"
-	RouteStats        = "/databases/{slug}/stats"
-	RouteSchema       = "/databases/{slug}/schema"
-	RouteTableRows    = "/databases/{slug}/tables/{schema}/{table}/rows"
-	RouteTableCount   = "/databases/{slug}/tables/{schema}/{table}/count"
-	RouteQuery        = "/databases/{slug}/query"
-	RouteDBUsers      = "/databases/{slug}/users"
-	RouteDBUser       = "/databases/{slug}/users/{name}"
-	RouteDBUserPass   = "/databases/{slug}/users/{name}/password"
-	RouteDBJobs       = "/databases/{slug}/jobs"
-	RouteDBBackups    = "/databases/{slug}/backups"
-	RouteBackups      = "/backups"
-	RouteBackup       = "/backups/{id}"
-	RouteBackupFile   = "/backups/{id}/download"
-	RouteBackupRest   = "/backups/{id}/restore"
-	RouteTemplates    = "/templates"
-	RouteTemplate     = "/templates/{id}"
-	RouteAdmins       = "/admins"
-	RouteAdmin        = "/admins/{name}"
-	RouteAdminPass    = "/admins/{name}/password"
-	RouteNotifyTest   = "/notifications/test"
-	URLParamSlug      = "slug"
-	URLParamID        = "id"
-	URLParamName      = "name"
-	URLParamSchema    = "schema"
-	URLParamTable     = "table"
+	RouteHealth          = "/health"
+	RouteAPI             = "/api"
+	RouteLogin           = "/auth/login"
+	RouteRegister        = "/auth/register"
+	RouteLogout          = "/auth/logout"
+	RouteSession         = "/auth/session"
+	RouteDatabases       = "/databases"
+	RouteAuditLog        = "/audit"
+	RouteSettings        = "/settings"
+	RouteAuthPassword    = "/auth/password"
+	RouteDatabase        = "/databases/{slug}"
+	RouteConnection      = "/databases/{slug}/connection"
+	RouteDBPassword      = "/databases/{slug}/password"
+	RouteExpiry          = "/databases/{slug}/expiry"
+	RouteExtend          = "/databases/{slug}/extend"
+	RouteStats           = "/databases/{slug}/stats"
+	RouteLiveConnections = "/databases/{slug}/live-connections"
+	RoutePublicConfig    = "/auth/config"
+	RouteSchema          = "/databases/{slug}/schema"
+	RouteTableRows       = "/databases/{slug}/tables/{schema}/{table}/rows"
+	RouteTableCount      = "/databases/{slug}/tables/{schema}/{table}/count"
+	RouteTableData       = "/databases/{slug}/tables/{schema}/{table}/data"
+	RouteQuery           = "/databases/{slug}/query"
+	RouteDBUsers         = "/databases/{slug}/users"
+	RouteDBUser          = "/databases/{slug}/users/{name}"
+	RouteDBUserPass      = "/databases/{slug}/users/{name}/password"
+	RouteDBJobs          = "/databases/{slug}/jobs"
+	RouteDBBackups       = "/databases/{slug}/backups"
+	RouteBackups         = "/backups"
+	RouteBackup          = "/backups/{id}"
+	RouteBackupFile      = "/backups/{id}/download"
+	RouteBackupRest      = "/backups/{id}/restore"
+	RouteTemplates       = "/templates"
+	RouteTemplate        = "/templates/{id}"
+	RouteAdmins          = "/admins"
+	RouteAdmin           = "/admins/{name}"
+	RouteAdminPass       = "/admins/{name}/password"
+	RouteNotifyTest      = "/notifications/test"
+	RouteGlobalExpiry    = "/settings/expiry"
+	RouteClients         = "/clients"
+	RouteClient          = "/clients/{id}"
+	RouteClientExpiry    = "/clients/{id}/expiry"
+	URLParamSlug         = "slug"
+	URLParamID           = "id"
+	URLParamName         = "name"
+	URLParamSchema       = "schema"
+	URLParamTable        = "table"
+)
+
+// Routes under /api/me — the reduced, self-service panel a ClientUser lands
+// on after logging in. Every one of them re-checks, server-side, that the
+// requested database belongs to the authenticated client (see
+// httpapi.ownershipMiddleware): a client can never reach another client's
+// data by guessing a slug.
+const (
+	RouteMyAccountPassword = "/me/password"
+	RouteMyDatabases       = "/me/databases"
+	RouteMyDatabase        = "/me/databases/{slug}"
+	RouteMyConnection      = "/me/databases/{slug}/connection"
+	RouteMyStats           = "/me/databases/{slug}/stats"
+	RouteMyLiveConnections = "/me/databases/{slug}/live-connections"
+	RouteMyTemplates       = "/me/templates"
+	RouteMySchema          = "/me/databases/{slug}/schema"
+	RouteMyDBPassword      = "/me/databases/{slug}/password"
+	RouteMyTableData       = "/me/databases/{slug}/tables/{schema}/{table}/data"
+	RouteMyTableCount      = "/me/databases/{slug}/tables/{schema}/{table}/count"
 )
 
 // HTTP / session details.

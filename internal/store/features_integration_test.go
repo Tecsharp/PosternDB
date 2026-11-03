@@ -332,3 +332,110 @@ func TestAdminsUsersJobsTemplatesRepositories(t *testing.T) {
 	require.NoError(t, m.DeleteTemplate(ctx, tpl.ID))
 	assert.ErrorIs(t, m.DeleteTemplate(ctx, tpl.ID), model.ErrNotFound)
 }
+
+func strp(s string) *string { return &s }
+
+func TestDataEditor(t *testing.T) {
+	ctx := context.Background()
+	_, insp := clientWithConsole(t, "pdb_it_data")
+	require.NoError(t, insp.ApplySQL(ctx, "pdb_it_data", "pdb_it_data", shopSchema+`
+		CREATE TABLE nopk (v text);
+		ALTER TABLE customers ADD COLUMN upper_name text GENERATED ALWAYS AS (upper(name)) STORED;`))
+	db, owner := "pdb_it_data", "pdb_it_data"
+
+	page, err := insp.Browse(ctx, db, owner, "public", "customers", 1, 50, "", false)
+	require.NoError(t, err)
+	assert.True(t, page.Editable)
+	assert.Equal(t, int64(2), page.Total)
+	assert.Equal(t, "Ana", *page.Rows[0][1])
+	assert.True(t, page.Columns[0].PrimaryKey)
+	assert.True(t, page.Columns[2].Generated)
+
+	sorted, err := insp.Browse(ctx, db, owner, "public", "customers", 1, 1, "name", true)
+	require.NoError(t, err)
+	assert.Equal(t, "Bruno", *sorted.Rows[0][1])
+	assert.Len(t, sorted.Rows, 1, "page size applied")
+
+	// Insert with defaults, NULLs and casts from text.
+	require.NoError(t, insp.InsertRow(ctx, db, owner, "public", "customers", model.RowValues{"name": strp("Carla")}))
+	require.NoError(t, insp.InsertRow(ctx, db, owner, "public", "orders", model.RowValues{"customer_id": strp("3"), "total": strp("99.50")}))
+	require.NoError(t, insp.UpdateRow(ctx, db, owner, "public", "orders", model.RowValues{"id": strp("4")}, model.RowValues{"total": nil}))
+	res, err := insp.Query(ctx, db, owner, "SELECT total IS NULL FROM orders WHERE id = 4")
+	require.NoError(t, err)
+	assert.Equal(t, "t", res.Rows[0][0])
+
+	// Constraint errors come back from PostgreSQL.
+	err = insp.InsertRow(ctx, db, owner, "public", "orders", model.RowValues{"customer_id": strp("999")})
+	assert.ErrorContains(t, err, "foreign key")
+	err = insp.InsertRow(ctx, db, owner, "public", "orders", model.RowValues{"total": strp("not a number")})
+	assert.Error(t, err)
+
+	// Delete exactly one row, by primary key.
+	require.NoError(t, insp.DeleteRow(ctx, db, owner, "public", "orders", model.RowValues{"id": strp("4")}))
+	assert.ErrorIs(t, insp.DeleteRow(ctx, db, owner, "public", "orders", model.RowValues{"id": strp("4")}), ErrRowNotFound)
+	assert.ErrorIs(t, insp.UpdateRow(ctx, db, owner, "public", "orders", model.RowValues{}, model.RowValues{"total": strp("1")}), ErrMissingKey)
+	assert.ErrorIs(t, insp.UpdateRow(ctx, db, owner, "public", "orders", model.RowValues{"id": strp("1")}, model.RowValues{}), ErrNothingToWrite)
+
+	// Read-only cases.
+	assert.ErrorIs(t, insp.InsertRow(ctx, db, owner, "public", "nopk", model.RowValues{"v": strp("x")}), ErrReadOnlyTable)
+	assert.ErrorIs(t, insp.InsertRow(ctx, db, owner, "public", "big_orders", model.RowValues{}), ErrReadOnlyTable)
+	assert.ErrorIs(t, insp.InsertRow(ctx, db, owner, "public", "customers", model.RowValues{"upper_name": strp("X")}), ErrGeneratedWrite)
+	nopk, err := insp.Browse(ctx, db, owner, "public", "nopk", 1, 10, "", false)
+	require.NoError(t, err)
+	assert.False(t, nopk.Editable)
+	_, err = insp.Browse(ctx, db, owner, "public", "ghost", 1, 10, "", false)
+	assert.ErrorIs(t, err, ErrTableNotFound)
+}
+
+// Security: column names come only from pg_catalog; anything else is rejected.
+func TestDataEditorRejectsInjection(t *testing.T) {
+	ctx := context.Background()
+	_, insp := clientWithConsole(t, "pdb_it_inject")
+	require.NoError(t, insp.ApplySQL(ctx, "pdb_it_inject", "pdb_it_inject", shopSchema))
+	db := "pdb_it_inject"
+
+	evil := `name = 'x'; DROP TABLE orders; --`
+	assert.ErrorIs(t, insp.UpdateRow(ctx, db, db, "public", "customers", model.RowValues{"id": strp("1")}, model.RowValues{evil: strp("x")}), ErrUnknownColumn)
+	_, err := insp.Browse(ctx, db, db, "public", "customers", 1, 10, "id; DROP TABLE orders", false)
+	assert.ErrorIs(t, err, ErrUnknownColumn)
+	_, err = insp.Browse(ctx, db, db, "public", `orders"; DROP TABLE orders; --`, 1, 10, "", false)
+	assert.ErrorIs(t, err, ErrTableNotFound)
+	// Values are bind parameters: SQL in a value is stored as text.
+	require.NoError(t, insp.UpdateRow(ctx, db, db, "public", "customers", model.RowValues{"id": strp("1")}, model.RowValues{"name": strp("'); DROP TABLE orders; --")}))
+	n, err := insp.CountRows(ctx, db, db, "public", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), n, "orders still exists")
+
+	// Platform tables are out of reach: the console cannot even connect there.
+	_, err = insp.Browse(ctx, platformDB, db, "public", "admins", 1, 10, "", false)
+	assert.Error(t, err)
+}
+
+func TestPlatformSettings(t *testing.T) {
+	ctx := context.Background()
+	m := NewMetadata(pool)
+
+	before, err := m.GetPlatformSettings(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, before.ExpirationDays, "seeded row starts with no override")
+
+	days, warn := 60, 5
+	saved, err := m.SetPlatformSettings(ctx, &days, &warn, "root")
+	require.NoError(t, err)
+	assert.Equal(t, 60, *saved.ExpirationDays)
+	assert.Equal(t, 5, *saved.ExpiringSoonDays)
+	assert.Equal(t, "root", saved.UpdatedBy)
+
+	got, err := m.GetPlatformSettings(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 60, *got.ExpirationDays)
+
+	reset, err := m.SetPlatformSettings(ctx, nil, &warn, "root")
+	require.NoError(t, err)
+	assert.Nil(t, reset.ExpirationDays, "nil resets the field to the .env default")
+	assert.Equal(t, 5, *reset.ExpiringSoonDays)
+
+	// Reset for any later test in this package relying on defaults.
+	_, err = m.SetPlatformSettings(ctx, nil, nil, "root")
+	require.NoError(t, err)
+}

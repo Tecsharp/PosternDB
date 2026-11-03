@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -45,6 +46,28 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user": id.Username, "role": id.Role, "expiresAt": exp})
 }
 
+// register lets a client create their own account, publicly and without an
+// admin. s.Clients.Register itself refuses when ALLOW_SELF_REGISTER=false.
+func (s *server) register(w http.ResponseWriter, r *http.Request) {
+	var req loginRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	u, err := s.Clients.Register(r.Context(), req.Username, req.Password)
+	if err != nil {
+		s.domainError(w, "register", err)
+		return
+	}
+	token, exp, err := s.Auth.Issue(u.Username)
+	if err != nil {
+		s.internalError(w, "issue session", err)
+		return
+	}
+	auth.SetSessionCookie(w, token, exp, isHTTPS(r))
+	writeJSON(w, http.StatusCreated, map[string]any{"user": u.Username, "role": config.RoleClient, "expiresAt": exp})
+}
+
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	auth.ClearSessionCookie(w, isHTTPS(r))
 	w.WriteHeader(http.StatusNoContent)
@@ -68,6 +91,19 @@ func (s *server) changeOwnPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.noContent(w, "change password", s.Admins.ChangeOwnPassword(r.Context(), actor(r), req.Current, req.Next))
+}
+
+func (s *server) changeOwnClientPassword(w http.ResponseWriter, r *http.Request) {
+	var req passwordChange
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	id := auth.FromContext(r.Context()).ClientUserID
+	if id == nil {
+		s.internalError(w, "change client password", errors.New("missing client id in session"))
+		return
+	}
+	s.noContent(w, "change client password", s.Clients.ChangeOwnPassword(r.Context(), *id, req.Current, req.Next))
 }
 
 // ---- administrators (owner only) ------------------------------------------------
@@ -106,4 +142,50 @@ func (s *server) resetAdminPassword(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) deleteAdmin(w http.ResponseWriter, r *http.Request) {
 	s.noContent(w, "delete admin", s.Admins.Delete(r.Context(), urlName(r), actor(r)))
+}
+
+// ---- usuarios / clientes (owner only) --------------------------------------------
+
+func (s *server) listClients(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Databases.ListClients(r.Context())
+	s.respond(w, "list clients", map[string]any{"clients": list}, err)
+}
+
+type clientRequest struct {
+	Username string `json:"username"`
+}
+
+func (s *server) createClient(w http.ResponseWriter, r *http.Request) {
+	var req clientRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	u, password, err := s.Clients.Create(r.Context(), req.Username, actor(r))
+	s.secret(w, http.StatusCreated, "create client", map[string]any{"client": u, "password": password}, err)
+}
+
+func (s *server) deleteClient(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	s.noContent(w, "delete client", s.Clients.Delete(r.Context(), id, actor(r)))
+}
+
+type clientExpiryRequest struct {
+	NeverExpires bool `json:"neverExpires"`
+	MaxIdleDays  *int `json:"maxIdleDays"`
+}
+
+func (s *server) setClientExpiry(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var req clientExpiryRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	saved, err := s.Databases.SetClientExpiry(r.Context(), id, req.NeverExpires, req.MaxIdleDays, actor(r))
+	s.respond(w, "set client expiry", saved, err)
 }

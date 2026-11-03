@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/tecsharp/posterndb/internal/config"
+	"github.com/tecsharp/posterndb/internal/model"
 )
 
 type fakeAdmins struct {
@@ -37,11 +38,39 @@ func (f fakeAdmins) RoleOf(_ context.Context, u string) (string, error) {
 	return "", errors.New("not found")
 }
 
+type fakeClientUser struct {
+	id       int64
+	password string
+}
+
+type fakeClients struct {
+	users map[string]fakeClientUser
+	err   error
+}
+
+func (f fakeClients) Authenticate(_ context.Context, u, p string) (model.ClientUser, bool, error) {
+	if f.err != nil {
+		return model.ClientUser{}, false, f.err
+	}
+	if cu, ok := f.users[u]; ok && cu.password == p {
+		return model.ClientUser{ID: cu.id, Username: u}, true, nil
+	}
+	return model.ClientUser{}, false, nil
+}
+
+func (f fakeClients) Exists(_ context.Context, u string) (int64, bool, error) {
+	if f.err != nil {
+		return 0, false, f.err
+	}
+	cu, ok := f.users[u]
+	return cu.id, ok, nil
+}
+
 func newWithAdmins() *Authenticator {
 	return New("root", "bootstrap-password", secret, time.Hour, fakeAdmins{
 		roles: map[string]string{"ana": config.RoleViewer},
 		pass:  map[string]string{"ana": "ana-password-123", "root": "stored-root-password"},
-	})
+	}, nil)
 }
 
 func TestLogin(t *testing.T) {
@@ -66,14 +95,63 @@ func TestLogin(t *testing.T) {
 	_, ok, _ = newAuth().Login(ctx, "ana", "x")
 	assert.False(t, ok, "no admin store configured")
 
-	failing := New("root", "p", secret, time.Hour, fakeAdmins{err: errors.New("db down")})
+	failing := New("root", "p", secret, time.Hour, fakeAdmins{err: errors.New("db down")}, nil)
 	_, _, err = failing.Login(ctx, "ana", "x")
 	assert.Error(t, err)
 }
 
+func TestLoginFallsThroughToClients(t *testing.T) {
+	ctx := context.Background()
+	store := fakeClients{users: map[string]fakeClientUser{"bea": {id: 7, password: "bea-password-123"}}}
+	a := New("root", "p", secret, time.Hour, nil, store)
+
+	id, ok, err := a.Login(ctx, "bea", "bea-password-123")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, config.RoleClient, id.Role)
+	require.NotNil(t, id.ClientUserID)
+	assert.Equal(t, int64(7), *id.ClientUserID)
+
+	_, ok, _ = a.Login(ctx, "bea", "wrong")
+	assert.False(t, ok)
+
+	failing := New("root", "p", secret, time.Hour, nil, fakeClients{err: errors.New("db down")})
+	_, _, err = failing.Login(ctx, "bea", "x")
+	assert.Error(t, err)
+}
+
+func TestMiddlewareResolvesClientIdentity(t *testing.T) {
+	store := fakeClients{users: map[string]fakeClientUser{"bea": {id: 7, password: "x"}}}
+	a := New("root", "p", secret, time.Hour, nil, store)
+	var got Identity
+	h := a.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = FromContext(r.Context()) }))
+
+	token, _, err := a.Issue("bea")
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, config.RoleClient, got.Role)
+	require.NotNil(t, got.ClientUserID)
+	assert.Equal(t, int64(7), *got.ClientUserID)
+}
+
+func TestRequireClient(t *testing.T) {
+	h := RequireClient(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	for role, want := range map[string]int{config.RoleClient: http.StatusOK, config.RoleOwner: http.StatusForbidden, config.RoleAdmin: http.StatusForbidden, "": http.StatusForbidden} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, Identity{Username: "x", Role: role}))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		assert.Equal(t, want, rec.Code, role)
+	}
+}
+
 func TestMiddlewareResolvesCurrentRole(t *testing.T) {
 	store := fakeAdmins{roles: map[string]string{"ana": config.RoleAdmin}}
-	a := New("root", "p", secret, time.Hour, store)
+	a := New("root", "p", secret, time.Hour, store, nil)
 	var got Identity
 	h := a.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = FromContext(r.Context()) }))
 
@@ -92,7 +170,7 @@ func TestMiddlewareResolvesCurrentRole(t *testing.T) {
 	assert.Equal(t, config.RoleOwner, got.Role)
 	assert.Equal(t, http.StatusUnauthorized, call("deleted-user"), "removed admins lose access immediately")
 
-	noStore := New("root", "p", secret, time.Hour, nil)
+	noStore := New("root", "p", secret, time.Hour, nil, nil)
 	token, _, _ := noStore.Issue("ana")
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})

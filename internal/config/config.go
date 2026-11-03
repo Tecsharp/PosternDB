@@ -47,6 +47,11 @@ type Config struct {
 	LocalDBPort int
 	BackupDir   string
 	Notify      NotifyConfig
+	// AllowSelfRegister enables the public /auth/register endpoint and the
+	// "panel de usuario" sign-up link. false = only administrators create
+	// client accounts.
+	AllowSelfRegister   bool
+	MaxDatabasesPerUser int
 }
 
 // NotifyConfig configures expiry warnings. Every channel is optional.
@@ -140,13 +145,15 @@ func Load(getenv Getenv) (*Config, error) {
 			Host:     p.optional(EnvPostgresHost, DefaultPostgresHost),
 			Port:     p.positiveInt(EnvPostgresPort, DefaultPostgresPort),
 		},
-		HTTPAddr:           p.optional(EnvHTTPAddr, DefaultHTTPAddr),
-		TunnelDBService:    p.optional(EnvTunnelDBService, DefaultTunnelDBService),
-		TunnelPanelService: p.optional(EnvTunnelPanelService, DefaultTunnelPanelService),
-		ClientLocalPort:    p.positiveInt(EnvClientDBPort, DefaultClientLocalPort),
-		LocalMode:          local,
-		LocalDBPort:        p.positiveInt(EnvLocalDBPort, DefaultLocalDBPort),
-		BackupDir:          p.optional(EnvBackupDir, DefaultBackupDir),
+		HTTPAddr:            p.optional(EnvHTTPAddr, DefaultHTTPAddr),
+		TunnelDBService:     p.optional(EnvTunnelDBService, DefaultTunnelDBService),
+		TunnelPanelService:  p.optional(EnvTunnelPanelService, DefaultTunnelPanelService),
+		ClientLocalPort:     p.positiveInt(EnvClientDBPort, DefaultClientLocalPort),
+		LocalMode:           local,
+		LocalDBPort:         p.positiveInt(EnvLocalDBPort, DefaultLocalDBPort),
+		BackupDir:           p.optional(EnvBackupDir, DefaultBackupDir),
+		AllowSelfRegister:   p.boolean(EnvAllowSelfRegister, DefaultAllowSelfRegister),
+		MaxDatabasesPerUser: p.positiveInt(EnvMaxDatabasesPerClient, DefaultMaxDBsPerClient),
 		Notify: NotifyConfig{
 			WebhookURL:   p.value(EnvNotifyWebhookURL),
 			EmailTo:      splitList(p.value(EnvNotifyEmailTo)),

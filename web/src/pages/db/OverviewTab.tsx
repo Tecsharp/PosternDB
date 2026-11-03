@@ -1,4 +1,6 @@
+import { useCallback } from 'react'
 import { api } from '../../api'
+import { ActiveConnections } from '../../components/ActiveConnections'
 import { ErrorNote, KeyValue, Loading, Metrics, Panel, useLoad } from '../../components/ui'
 import { formatBytes, formatDate, formatDateTime, formatNumber, formatRelative } from '../../format'
 import { Lifeline } from '../Databases'
@@ -10,6 +12,7 @@ export function OverviewTab({ db, settings }: TabProps) {
   const stats = useLoad(() => (active ? api.stats(db.slug) : Promise.resolve(null)), [db.slug, active])
   const jobs = useLoad(() => api.jobs(db.slug), [db.slug])
   const s = stats.data
+  const loadConnections = useCallback(() => api.liveConnections(db.slug), [db.slug])
 
   return (
     <div className="space-y-6">
@@ -30,12 +33,14 @@ export function OverviewTab({ db, settings }: TabProps) {
         </>
       )}
 
+      {active && <ActiveConnections load={loadConnections} />}
+
       <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
         {s && s.topTables.length > 0 ? (
           <Panel title="Tablas más grandes">
-            <table className="w-full text-left text-[13px]">
+            <table className="w-full text-left text-[0.95rem]">
               <thead>
-                <tr className="text-[12px] text-ink-2">
+                <tr className="text-[0.85rem] text-ink-2">
                   <th scope="col" className="px-4 py-2 font-medium">Tabla</th>
                   <th scope="col" className="px-4 py-2 text-right font-medium">Registros</th>
                   <th scope="col" className="px-4 py-2 text-right font-medium">Tamaño</th>
@@ -57,7 +62,7 @@ export function OverviewTab({ db, settings }: TabProps) {
           </Panel>
         ) : (
           <Panel title="Tablas más grandes">
-            <p className="px-5 py-6 text-[13px] text-ink-2">{active ? 'Todavía no hay tablas.' : 'La base expiró; sus datos ya no están en línea.'}</p>
+            <p className="px-5 py-6 text-[0.95rem] text-ink-2">{active ? 'Todavía no hay tablas.' : 'La base expiró; sus datos ya no están en línea.'}</p>
           </Panel>
         )}
 
@@ -72,7 +77,7 @@ export function OverviewTab({ db, settings }: TabProps) {
               ],
               ['Límite de inactividad', db.neverExpires ? 'Sin límite' : `${db.maxIdleDays ?? settings.expirationDays} días${db.maxIdleDays ? '' : ' (global)'}`],
               ['Creada', formatDate(db.createdAt)],
-              ['Base / usuario', <span className="font-mono text-[12.5px]">{db.database}</span>],
+              ['Base / usuario', <span className="font-mono text-[0.9rem]">{db.database}</span>],
             ]}
           />
         </Panel>
@@ -82,7 +87,7 @@ export function OverviewTab({ db, settings }: TabProps) {
         {jobs.data && jobs.data.length > 0 ? (
           <JobsList jobs={jobs.data} />
         ) : (
-          <p className="px-5 py-6 text-[13px] text-ink-2">Sin respaldos, clonaciones ni restauraciones todavía.</p>
+          <p className="px-5 py-6 text-[0.95rem] text-ink-2">Sin respaldos, clonaciones ni restauraciones todavía.</p>
         )}
       </Panel>
     </div>

@@ -3,10 +3,10 @@ import { AddCircleIcon } from '@solar-icons/react/linear'
 import { api, can, type Template } from '../api'
 import type { PageProps } from '../App'
 import { PageBody, PageHeader } from '../components/Shell'
-import { Button, CodeBlock, EmptyState, ErrorNote, Loading, Sheet, SheetFooter, SheetHeader, useAction, useLoad } from '../components/ui'
+import { Button, CodeBlock, EmptyState, ErrorNote, Loading, Sheet, SheetFooter, SheetHeader, Tag, useAction, useLoad } from '../components/ui'
 import { formatDate } from '../format'
 
-type Draft = { id?: number; name: string; description: string; sql: string }
+type Draft = { id?: number; name: string; description: string; sql: string; shared: boolean }
 
 export function Templates({ session }: PageProps) {
   const { data, error, loading, reload } = useLoad(api.templates, [])
@@ -22,8 +22,8 @@ export function Templates({ session }: PageProps) {
         subtitle="SQL que se ejecuta al crear una base, con los permisos de su dueño."
         actions={
           operate && (
-            <Button variant="primary" onClick={() => setEditing({ name: '', description: '', sql: '' })}>
-              <AddCircleIcon size={16} aria-hidden />
+            <Button variant="primary" onClick={() => setEditing({ name: '', description: '', sql: '', shared: false })}>
+              <AddCircleIcon size={18} aria-hidden />
               Nueva plantilla
             </Button>
           )
@@ -42,17 +42,20 @@ export function Templates({ session }: PageProps) {
             <article key={t.id} className="group-box flex flex-col">
               <header className="flex items-start justify-between gap-3 px-5 pt-4">
                 <div className="min-w-0">
-                  <h2 className="text-[15px] font-semibold">{t.name}</h2>
-                  <p className="mt-0.5 text-[12.5px] text-ink-2">{t.description || 'Sin descripción.'}</p>
+                  <h2 className="flex flex-wrap items-center gap-2 text-[1.05rem] font-semibold">
+                    {t.name}
+                    {t.shared && <Tag tone="accent">Visible para usuarios</Tag>}
+                  </h2>
+                  <p className="mt-0.5 text-[0.9rem] text-ink-2">{t.description || 'Sin descripción.'}</p>
                 </div>
-                <span className="shrink-0 text-[12px] text-ink-3">{formatDate(t.updatedAt)}</span>
+                <span className="shrink-0 text-[0.85rem] text-ink-3">{formatDate(t.updatedAt)}</span>
               </header>
               <div className="flex-1 px-5 py-3">
                 <CodeBlock code={t.sql.length > 600 ? `${t.sql.slice(0, 600)}\n…` : t.sql} label={`SQL de ${t.name}`} />
               </div>
               {operate && (
                 <footer className="flex gap-2 px-5 pt-1 pb-4">
-                  <Button size="sm" onClick={() => setEditing({ id: t.id, name: t.name, description: t.description, sql: t.sql })}>
+                  <Button size="sm" onClick={() => setEditing({ id: t.id, name: t.name, description: t.description, sql: t.sql, shared: t.shared })}>
                     Editar
                   </Button>
                   <Button size="sm" variant="ghost" className="hover:text-danger" onClick={() => setRemoving(t)}>
@@ -127,7 +130,14 @@ function TemplateEditor({ draft, onClose, onSaved }: { draft: Draft; onClose: ()
             </label>
             <label className="block">
               <span className="label">SQL</span>
-              <textarea className="field min-h-64 font-mono text-[12.5px]" required spellCheck={false} value={f.sql} onChange={(e) => setForm({ ...f, sql: e.target.value })} />
+              <textarea className="field min-h-64 font-mono text-[0.9rem]" required spellCheck={false} value={f.sql} onChange={(e) => setForm({ ...f, sql: e.target.value })} />
+            </label>
+            <label className="flex items-start gap-2.5 text-[0.95rem] font-normal text-ink">
+              <input type="checkbox" className="mt-1 accent-[var(--accent)]" checked={f.shared} onChange={(e) => setForm({ ...f, shared: e.target.checked })} />
+              <span>
+                Mostrar a los usuarios registrados
+                <span className="block text-[0.85rem] text-ink-2">Podrán crear su base a partir de esta plantilla y ver su SQL como muestra.</span>
+              </span>
             </label>
             {error && <ErrorNote message={error} />}
           </div>

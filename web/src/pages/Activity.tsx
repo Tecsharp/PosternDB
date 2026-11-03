@@ -90,16 +90,16 @@ export function Activity() {
           {data && rows.length === 0 && <EmptyState title="Sin eventos" />}
           <ol className="group-rows">
             {rows.map((e) => (
-              <li key={e.id} className="grid grid-cols-[130px_1fr] gap-x-4 px-5 py-3 text-[13px] max-sm:grid-cols-1">
+              <li key={e.id} className="grid grid-cols-[130px_1fr] gap-x-4 px-5 py-3 text-[0.95rem] max-sm:grid-cols-1">
                 <time dateTime={e.occurredAt} className="text-ink-2 tabular-nums">
                   {formatDateTime(e.occurredAt)}
                 </time>
                 <div className="min-w-0">
                   <p>
                     <span className={alerting.has(e.action) ? 'font-semibold text-warn' : 'font-semibold'}>{actionText[e.action] ?? e.action}</span>
-                    {e.target && <span className="ml-2 font-mono text-[12px] text-ink-2">{e.target}</span>}
+                    {e.target && <span className="ml-2 font-mono text-[0.85rem] text-ink-2">{e.target}</span>}
                   </p>
-                  <p className="mt-0.5 truncate text-[12px] text-ink-2">{[summary(e), `por ${e.actor}`].filter(Boolean).join('. ')}</p>
+                  <p className="mt-0.5 truncate text-[0.85rem] text-ink-2">{[summary(e), `por ${e.actor}`].filter(Boolean).join('. ')}</p>
                 </div>
               </li>
             ))}

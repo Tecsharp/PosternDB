@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { DownloadIcon } from '@solar-icons/react/linear'
+import { ArchiveDownMinimalisticIcon, DownloadIcon } from '@solar-icons/react/linear'
 import { api, can, type Credentials, type Job } from '../api'
 import type { PageProps } from '../App'
 import { CredentialsSheet } from '../components/CredentialsSheet'
@@ -17,23 +17,68 @@ export function Backups({ session, settings }: PageProps) {
   const [creds, setCreds] = useState<Credentials | null>(null)
   const action = useAction()
   const operate = can.operate(session.role)
+  const databases = useLoad(api.databases, [])
+  const [target, setTarget] = useState('')
+  const [queued, setQueued] = useState('')
+  const active = (databases.data ?? []).filter((d) => d.status !== 'expirada')
+
+  async function backupNow() {
+    setQueued('')
+    const job = await action.run(() => api.backup(target))
+    if (job) {
+      setQueued(`Respaldo de ${target} en cola; aparecerá aquí en unos segundos.`)
+      setTimeout(reload, 4000)
+    }
+  }
 
   return (
     <>
       <PageHeader
         title="Respaldos"
         subtitle={settings.backupBeforeDelete ? 'Las bases se respaldan antes de borrarse al expirar o eliminarse.' : 'BACKUP_BEFORE_DELETE=false: solo hay respaldos manuales.'}
+        actions={
+          operate && (
+            <form
+              className="flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (target) void backupNow()
+              }}
+            >
+              <label className="sr-only" htmlFor="backup-target">
+                Base a respaldar
+              </label>
+              <select id="backup-target" className="field w-52" value={target} onChange={(e) => setTarget(e.target.value)}>
+                <option value="">Elige una base</option>
+                {active.map((d) => (
+                  <option key={d.id} value={d.slug}>
+                    {d.slug}
+                  </option>
+                ))}
+              </select>
+              <Button type="submit" variant="primary" disabled={!target || action.busy}>
+                <ArchiveDownMinimalisticIcon size={18} aria-hidden />
+                Respaldar ahora
+              </Button>
+            </form>
+          )
+        }
       />
       <PageBody>
+        {queued && (
+          <p role="status" className="text-[0.95rem] text-accent-text">
+            {queued}
+          </p>
+        )}
         <section className="group-box">
           {loading && !data && <Loading label="Cargando respaldos…" />}
           {(error || action.error) && <div className="p-5"><ErrorNote message={error || action.error} /></div>}
-          {data && data.length === 0 && <EmptyState title="Sin respaldos todavía">Crea uno desde la pestaña Respaldos de cualquier base.</EmptyState>}
+          {data && data.length === 0 && <EmptyState title="Sin respaldos todavía">Elige una base arriba y pulsa "Respaldar ahora".</EmptyState>}
           {data && data.length > 0 && (
-            <table className="w-full text-left text-[13px]">
+            <table className="w-full text-left text-[0.95rem]">
               <caption className="sr-only">Respaldos disponibles</caption>
               <thead className="max-md:sr-only">
-                <tr className="text-[12px] text-ink-2">
+                <tr className="text-[0.85rem] text-ink-2">
                   {['Archivo', 'Base', 'Origen', 'Tamaño', 'Fecha', ''].map((h, i) => (
                     <th key={i} scope="col" className="border-b border-line px-5 py-2.5 font-medium">
                       {h || <span className="sr-only">Acciones</span>}
@@ -44,7 +89,7 @@ export function Backups({ session, settings }: PageProps) {
               <tbody>
                 {data.map((b) => (
                   <tr key={b.id} className="hover:bg-surface-2 max-md:flex max-md:flex-col max-md:gap-1 max-md:border-b max-md:border-line max-md:px-5 max-md:py-3">
-                    <td className="border-b border-line px-5 py-3 font-mono text-[12.5px] max-md:border-0 max-md:p-0">{b.file}</td>
+                    <td className="border-b border-line px-5 py-3 font-mono text-[0.9rem] max-md:border-0 max-md:p-0">{b.file}</td>
                     <td className="border-b border-line px-5 py-3 max-md:border-0 max-md:p-0">
                       {b.slug ? (
                         <a className="hover:underline" href={href({ page: 'database', slug: b.slug, tab: 'respaldos' })} onClick={linkHandler(href({ page: 'database', slug: b.slug, tab: 'respaldos' }))}>
@@ -61,7 +106,7 @@ export function Backups({ session, settings }: PageProps) {
                       {operate && (
                         <span className="inline-flex gap-1">
                           <a className="inline-flex h-6 items-center rounded-[6px] px-1.5 text-ink-2 hover:bg-surface-2 hover:text-ink" href={api.backupDownloadUrl(b.id)} download aria-label={`Descargar ${b.file}`}>
-                            <DownloadIcon size={16} aria-hidden />
+                            <DownloadIcon size={18} aria-hidden />
                           </a>
                           <Button size="sm" onClick={() => setRestoring(b)}>
                             Restaurar
@@ -139,7 +184,7 @@ export function RestoreSheet({ backup, onClose, onRestored }: { backup: Job | nu
             <label className="block">
               <span className="label">Nombre de la base nueva</span>
               <input className="field font-mono" autoFocus required placeholder={`${backup.slug || 'cliente'}-restaurada`} value={raw} aria-invalid={problem ? 'true' : 'false'} onChange={(e) => setRaw(e.target.value)} />
-              {problem && <span className="mt-1.5 block text-[12px] text-danger">{problem}</span>}
+              {problem && <span className="mt-1.5 block text-[0.85rem] text-danger">{problem}</span>}
             </label>
             {error && <ErrorNote message={error} />}
           </div>

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,10 +109,10 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	require.NoError(t, Migrate(context.Background(), pool))
 	var n int
 	require.NoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&n))
-	assert.Equal(t, 2, n)
+	assert.Equal(t, 6, n)
 	var templates int
 	require.NoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM templates").Scan(&templates))
-	assert.Equal(t, 1, templates, "demo template seeded once")
+	assert.Equal(t, 6, templates, "sample templates seeded once, not duplicated by re-running migrations")
 }
 
 func TestOpenTimesOut(t *testing.T) {
@@ -340,4 +341,107 @@ func containsSlug(dbs []model.ClientDatabase, slug string) bool {
 		}
 	}
 	return false
+}
+
+func TestClientUserIDAndClientExpiryOverrides(t *testing.T) {
+	ctx := context.Background()
+	m := NewMetadata(pool)
+
+	ana, err := m.CreateClientUser(ctx, "ana-it", "hash", "")
+	require.NoError(t, err)
+	defer func() { _ = m.DeleteClientUser(ctx, ana.ID) }()
+
+	row, err := m.InsertDatabase(ctx, model.ClientDatabase{
+		Slug: "it-owner", DBName: "pdb_it_owner2", RoleName: "pdb_it_owner2", Hostname: "it-owner.example.com",
+		LastSeenAt: time.Now(), ClientUserID: &ana.ID,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, row.ClientUserID)
+	assert.Equal(t, ana.ID, *row.ClientUserID)
+	got, err := m.GetDatabase(ctx, "it-owner")
+	require.NoError(t, err)
+	require.NotNil(t, got.ClientUserID)
+	assert.Equal(t, ana.ID, *got.ClientUserID, "client_user_id round-trips through the database")
+
+	n, err := m.CountByClientUser(ctx, ana.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	owned, err := m.ListByClientUser(ctx, ana.ID)
+	require.NoError(t, err)
+	require.Len(t, owned, 1)
+	assert.Equal(t, "it-owner", owned[0].Slug)
+
+	days := 45
+	saved, err := m.SetClientUserExpiry(ctx, ana.ID, false, &days, "root")
+	require.NoError(t, err)
+	assert.Equal(t, 45, *saved.MaxIdleDays)
+
+	// Upsert: setting it again replaces the row instead of erroring.
+	saved, err = m.SetClientUserExpiry(ctx, ana.ID, true, nil, "root")
+	require.NoError(t, err)
+	assert.True(t, saved.NeverExpires)
+	assert.Nil(t, saved.MaxIdleDays)
+
+	list, err := m.ListClientUsers(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "ana-it", list[0].Username)
+
+	require.NoError(t, m.MarkDeleted(ctx, row.ID, "", time.Now()))
+}
+
+func TestDatabaseConnectionsListsLiveSessions(t *testing.T) {
+	ctx := context.Background()
+	c := NewCluster(pool)
+	pass := provisionClient(t, "pdb_it_live")
+
+	none, err := c.DatabaseConnections(ctx, "pdb_it_live")
+	require.NoError(t, err)
+	assert.Empty(t, none)
+
+	conn, err := connectAs(ctx, "pdb_it_live", pass, "pdb_it_live")
+	require.NoError(t, err)
+	defer conn.Close(ctx)
+
+	idle, err := c.DatabaseConnections(ctx, "pdb_it_live")
+	require.NoError(t, err)
+	require.Len(t, idle, 1)
+	assert.Equal(t, "pdb_it_live", idle[0].User)
+	assert.Equal(t, "idle", idle[0].State)
+	assert.Empty(t, idle[0].Query, "the statement text is hidden while idle")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = conn.Exec(ctx, "SELECT pg_sleep(2)")
+	}()
+	require.Eventually(t, func() bool {
+		list, err := c.DatabaseConnections(ctx, "pdb_it_live")
+		return err == nil && len(list) == 1 && list[0].State == "active" && strings.Contains(list[0].Query, "pg_sleep")
+	}, 5*time.Second, 100*time.Millisecond, "a running statement is visible")
+	<-done
+}
+
+func TestSharedTemplatesAreSeededAndPersist(t *testing.T) {
+	ctx := context.Background()
+	meta := NewMetadata(pool)
+
+	all, err := meta.ListTemplates(ctx)
+	require.NoError(t, err)
+	shared := 0
+	for _, tpl := range all {
+		if tpl.Shared {
+			shared++
+		}
+	}
+	assert.GreaterOrEqual(t, shared, 5, "migration 006 ships sample templates for users")
+
+	saved, err := meta.SaveTemplate(ctx, model.Template{Name: "it-privada", SQL: "SELECT 1", Shared: false})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = meta.DeleteTemplate(context.Background(), saved.ID) })
+	assert.False(t, saved.Shared)
+	saved.Shared = true
+	updated, err := meta.SaveTemplate(ctx, saved)
+	require.NoError(t, err)
+	assert.True(t, updated.Shared)
 }
