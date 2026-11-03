@@ -27,6 +27,11 @@ export interface Account {
   createdAt: string
   maxDatabases: number
   databaseCount: number
+  /** Leads the name of the user's databases (abcd12-tienda). */
+  code: string
+  hostPrefix: string
+  baseDomain: string
+  localMode: boolean
 }
 
 export interface RegisterForm {
@@ -41,6 +46,8 @@ export interface PublicConfig {
   googleEnabled: boolean
   /** false when AUTH_MODE=google: registered users have no password login. */
   passwordEnabled: boolean
+  /** Public site with the privacy policy and the terms; empty = no links. */
+  landingUrl: string
 }
 
 export interface Database {
@@ -203,16 +210,6 @@ export interface Connection {
   query?: string
 }
 
-export interface Admin {
-  id: number
-  username: string
-  role: Role
-  createdAt: string
-  createdBy: string
-  lastLoginAt?: string
-  bootstrap: boolean
-}
-
 export interface AuditEntry {
   id: number
   occurredAt: string
@@ -222,9 +219,13 @@ export interface AuditEntry {
   details?: Record<string, unknown>
 }
 
+/** What an account is: a plain user, or someone who also opens the admin panel. */
+export type AccountRole = 'user' | 'viewer' | 'admin'
+
 export interface ClientUser {
   id: number
   username: string
+  role: AccountRole
   email?: string
   fullName?: string
   googleLinked: boolean
@@ -237,6 +238,7 @@ export interface ClientUser {
   updatedBy?: string
   databaseCount?: number
   lastLoginAt?: string
+  code?: string
 }
 
 export interface PlatformSettings {
@@ -383,14 +385,13 @@ export const api = {
 
   audit: () => request<{ entries: AuditEntry[] }>('GET', '/audit').then((r) => r.entries),
 
-  admins: () => request<{ admins: Admin[] }>('GET', '/admins').then((r) => r.admins),
-  createAdmin: (username: string, role: Role) =>
-    request<{ admin: Admin; password: string }>('POST', '/admins', { username, role }),
-  setAdminRole: (username: string, role: Role) =>
-    request<void>('PATCH', `/admins/${encodeURIComponent(username)}`, { username, role }),
-  resetAdminPassword: (username: string) =>
-    request<{ password: string }>('POST', `/admins/${encodeURIComponent(username)}/password`),
-  deleteAdmin: (username: string) => request<void>('DELETE', `/admins/${encodeURIComponent(username)}`),
+  /** People with an admin role (accounts), plus the owner from .env. */
+  admins: () => request<{ owner: { username: string }; admins: ClientUser[] }>('GET', '/admins'),
+  setClientRole: (id: number, role: AccountRole) => request<ClientUser>('PUT', `/clients/${id}/role`, { role }),
+  /** The signed-in person's own activity. */
+  myActivity: () => request<{ entries: AuditEntry[] }>('GET', '/activity/me').then((r) => r.entries),
+  /** Activity of one person (user or administrator). */
+  clientActivity: (id: number) => request<{ entries: AuditEntry[] }>('GET', `/clients/${id}/activity`).then((r) => r.entries),
 }
 
 // ---- "Mis bases": the reduced panel a self-service client lands on ------------------------
@@ -438,6 +439,7 @@ export const me = {
 
 export const can = {
   operate: (role: Role) => role === 'owner' || role === 'admin',
-  manageAdmins: (role: Role) => role === 'owner',
+  /** Users and who is an administrator: the owner and administrators. */
+  manageUsers: (role: Role) => role === 'owner' || role === 'admin',
   manageExpiry: (role: Role) => role === 'owner',
 }

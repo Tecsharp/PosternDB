@@ -15,136 +15,206 @@ import (
 	"github.com/tecsharp/posterndb/internal/model"
 )
 
-type fakeAdmins struct {
-	roles map[string]string
-	pass  map[string]string
-	err   error
-}
-
-func (f fakeAdmins) Authenticate(_ context.Context, u, p string) (string, bool, error) {
-	if f.err != nil {
-		return "", false, f.err
-	}
-	if f.pass[u] != "" && f.pass[u] == p {
-		return f.roles[u], true, nil
-	}
-	return "", false, nil
-}
-
-func (f fakeAdmins) RoleOf(_ context.Context, u string) (string, error) {
-	if r, ok := f.roles[u]; ok {
-		return r, nil
-	}
-	return "", errors.New("not found")
-}
-
-type fakeClientUser struct {
+type fakeAccount struct {
 	id       int64
 	password string
+	role     string
 }
 
-type fakeClients struct {
-	users map[string]fakeClientUser
+// fakeAccounts is an in-memory account store; the role is read on every call,
+// so a test can change it between requests.
+type fakeAccounts struct {
+	users map[string]*fakeAccount
 	err   error
 }
 
-func (f fakeClients) Authenticate(_ context.Context, u, p string) (model.ClientUser, bool, error) {
+func (f fakeAccounts) user(name string, a *fakeAccount) model.ClientUser {
+	role := a.role
+	if role == "" {
+		role = config.AccountRoleUser
+	}
+	return model.ClientUser{ID: a.id, Username: name, Role: role}
+}
+
+func (f fakeAccounts) Authenticate(_ context.Context, u, p string) (model.ClientUser, bool, error) {
 	if f.err != nil {
 		return model.ClientUser{}, false, f.err
 	}
-	if cu, ok := f.users[u]; ok && cu.password == p {
-		return model.ClientUser{ID: cu.id, Username: u}, true, nil
+	if a, ok := f.users[u]; ok && a.password == p {
+		return f.user(u, a), true, nil
 	}
 	return model.ClientUser{}, false, nil
 }
 
-func (f fakeClients) ByID(_ context.Context, id int64) (model.ClientUser, bool, error) {
+func (f fakeAccounts) ByID(_ context.Context, id int64) (model.ClientUser, bool, error) {
 	if f.err != nil {
 		return model.ClientUser{}, false, f.err
 	}
-	for name, cu := range f.users {
-		if cu.id == id {
-			return model.ClientUser{ID: id, Username: name}, true, nil
+	for name, a := range f.users {
+		if a.id == id {
+			return f.user(name, a), true, nil
 		}
 	}
 	return model.ClientUser{}, false, nil
 }
 
-func newWithAdmins() *Authenticator {
-	return New("root", "bootstrap-password", secret, time.Hour, fakeAdmins{
-		roles: map[string]string{"ana": config.RoleViewer},
-		pass:  map[string]string{"ana": "ana-password-123", "root": "stored-root-password"},
-	}, nil)
+func accounts() fakeAccounts {
+	return fakeAccounts{users: map[string]*fakeAccount{
+		"ana": {id: 1, password: "ana-password-123", role: config.RoleViewer},
+		"bea": {id: 7, password: "bea-password-123"},
+		"cai": {id: 9, password: "cai-password-123", role: config.RoleAdmin},
+	}}
+}
+
+func call(a *Authenticator, subject string) (Identity, int) {
+	token, _, _ := a.Issue(subject)
+	var got Identity
+	h := a.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = FromContext(r.Context()) }))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return got, rec.Code
 }
 
 func TestLogin(t *testing.T) {
-	a := newWithAdmins()
+	a := New("root", "bootstrap-password", secret, time.Hour, accounts())
 	ctx := context.Background()
 
 	id, ok, err := a.Login(ctx, "root", "bootstrap-password")
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, Identity{Username: "root", Role: config.RoleOwner}, id)
+	assert.Nil(t, id.ClientUserID, "the owner is not an account")
 
 	id, ok, _ = a.Login(ctx, "ana", "ana-password-123")
 	assert.True(t, ok)
-	assert.Equal(t, config.RoleViewer, id.Role)
+	assert.Equal(t, config.RoleViewer, id.Role, "an account with the viewer role opens the admin panel read-only")
+	require.NotNil(t, id.ClientUserID)
+
+	id, ok, _ = a.Login(ctx, "cai", "cai-password-123")
+	assert.True(t, ok)
+	assert.Equal(t, config.RoleAdmin, id.Role)
+
+	id, ok, _ = a.Login(ctx, "bea", "bea-password-123")
+	assert.True(t, ok)
+	assert.Equal(t, config.RoleClient, id.Role, "a plain user stays in the reduced panel")
+	require.NotNil(t, id.ClientUserID)
+	assert.Equal(t, int64(7), *id.ClientUserID)
 
 	_, ok, _ = a.Login(ctx, "ana", "wrong")
 	assert.False(t, ok)
+	_, ok, _ = a.Login(ctx, "nobody", "x")
+	assert.False(t, ok)
 
-	_, ok, _ = a.Login(ctx, "root", "stored-root-password")
-	assert.False(t, ok, "the bootstrap name can never be taken over by a stored admin")
+	_, ok, _ = New("root", "p", secret, time.Hour, nil).Login(ctx, "ana", "x")
+	assert.False(t, ok, "no account store configured")
 
-	_, ok, _ = newAuth().Login(ctx, "ana", "x")
-	assert.False(t, ok, "no admin store configured")
-
-	failing := New("root", "p", secret, time.Hour, fakeAdmins{err: errors.New("db down")}, nil)
+	failing := New("root", "p", secret, time.Hour, fakeAccounts{err: errors.New("db down")})
 	_, _, err = failing.Login(ctx, "ana", "x")
 	assert.Error(t, err)
 }
 
-func TestLoginFallsThroughToClients(t *testing.T) {
-	ctx := context.Background()
-	store := fakeClients{users: map[string]fakeClientUser{"bea": {id: 7, password: "bea-password-123"}}}
-	a := New("root", "p", secret, time.Hour, nil, store)
-
-	id, ok, err := a.Login(ctx, "bea", "bea-password-123")
-	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.Equal(t, config.RoleClient, id.Role)
-	require.NotNil(t, id.ClientUserID)
-	assert.Equal(t, int64(7), *id.ClientUserID)
-
-	_, ok, _ = a.Login(ctx, "bea", "wrong")
-	assert.False(t, ok)
-
-	failing := New("root", "p", secret, time.Hour, nil, fakeClients{err: errors.New("db down")})
-	_, _, err = failing.Login(ctx, "bea", "x")
-	assert.Error(t, err)
+func TestTheOwnersNameCannotBeTakenByAnAccount(t *testing.T) {
+	a := New("root", "bootstrap-password", secret, time.Hour, fakeAccounts{users: map[string]*fakeAccount{
+		"root": {id: 3, password: "an-account-password", role: config.RoleAdmin},
+	}})
+	_, ok, _ := a.Login(context.Background(), "root", "an-account-password")
+	assert.False(t, ok, "an account named like the owner never logs in by that name")
 }
 
-func TestMiddlewareResolvesClientIdentity(t *testing.T) {
-	store := fakeClients{users: map[string]fakeClientUser{"bea": {id: 7, password: "x"}}}
-	a := New("root", "p", secret, time.Hour, nil, store)
-	var got Identity
-	h := a.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = FromContext(r.Context()) }))
+func TestMiddlewareResolvesTheCurrentRoleOfAnAccount(t *testing.T) {
+	store := accounts()
+	a := New("root", "p", secret, time.Hour, store)
+	subject := func(name string) string { return AccountIdentity(store.user(name, store.users[name])).Subject() }
 
-	token, _, err := a.Issue(ClientIdentity(model.ClientUser{ID: 7, Username: "bea"}).Subject())
-	require.NoError(t, err)
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	got, code := call(a, subject("bea"))
+	assert.Equal(t, http.StatusOK, code)
 	assert.Equal(t, config.RoleClient, got.Role)
-	require.NotNil(t, got.ClientUserID)
+
+	// The owner promotes bea: the very next request already opens the admin panel,
+	// with the same session and no new login.
+	store.users["bea"].role = config.RoleAdmin
+	got, code = call(a, subject("bea"))
+	assert.Equal(t, http.StatusOK, code)
+	assert.Equal(t, config.RoleAdmin, got.Role)
+	require.NotNil(t, got.ClientUserID, "an administrator is still an account")
 	assert.Equal(t, int64(7), *got.ClientUserID)
+
+	store.users["bea"].role = config.AccountRoleUser
+	got, _ = call(a, subject("bea"))
+	assert.Equal(t, config.RoleClient, got.Role, "and demoting takes effect immediately too")
+
+	delete(store.users, "bea")
+	_, code = call(a, AccountIdentity(model.ClientUser{ID: 7, Username: "bea"}).Subject())
+	assert.Equal(t, http.StatusUnauthorized, code, "a deleted account loses access at once")
+
+	got, code = call(a, "root")
+	assert.Equal(t, http.StatusOK, code)
+	assert.Equal(t, config.RoleOwner, got.Role)
+
+	_, code = call(New("root", "p", secret, time.Hour, nil), "client:1")
+	assert.Equal(t, http.StatusUnauthorized, code, "no account store configured")
+}
+
+func TestPlainSubjectsOnlyEverMeanTheOwner(t *testing.T) {
+	a := New("root", "p", secret, time.Hour, accounts())
+	_, code := call(a, "cai")
+	assert.Equal(t, http.StatusUnauthorized, code, "a bare username is not a session for any account")
+	_, code = call(a, "client:999")
+	assert.Equal(t, http.StatusUnauthorized, code, "unknown account id")
+	_, code = call(a, "client:abc")
+	assert.Equal(t, http.StatusUnauthorized, code, "malformed account subject")
+}
+
+// An account named like the owner must never resolve as the owner: the session
+// subject is namespaced by the account id.
+func TestAccountSessionNeverResolvesAsTheOwnerWithTheSameName(t *testing.T) {
+	store := fakeAccounts{users: map[string]*fakeAccount{"root": {id: 7, password: "x", role: config.RoleAdmin}}}
+	a := New("root", "p", secret, time.Hour, store)
+
+	got, code := call(a, AccountIdentity(store.user("root", store.users["root"])).Subject())
+	assert.Equal(t, http.StatusOK, code)
+	assert.Equal(t, config.RoleAdmin, got.Role, "an administrator account, never the owner")
+	assert.NotEqual(t, config.RoleOwner, got.Role)
+}
+
+func TestUserPasswordLoginCanBeSwitchedOffButNotForAdministrators(t *testing.T) {
+	a := New("root", "p", secret, time.Hour, accounts())
+	a.SetUserPasswordLogin(false)
+	ctx := context.Background()
+
+	_, ok, err := a.Login(ctx, "bea", "bea-password-123")
+	require.NoError(t, err)
+	assert.False(t, ok, "AUTH_MODE=google: plain users have no password login")
+
+	_, ok, _ = a.Login(ctx, "cai", "cai-password-123")
+	assert.True(t, ok, "administrators always can")
+	_, ok, _ = a.Login(ctx, "ana", "ana-password-123")
+	assert.True(t, ok, "viewers too")
+	_, ok, _ = a.Login(ctx, "root", "p")
+	assert.True(t, ok, "and the owner")
+}
+
+func TestAccountIdentityMapsStoredRolesToPanels(t *testing.T) {
+	for stored, want := range map[string]string{
+		config.AccountRoleUser: config.RoleClient,
+		config.RoleViewer:      config.RoleViewer,
+		config.RoleAdmin:       config.RoleAdmin,
+		"":                     config.RoleClient,
+		"owner":                config.RoleClient,
+		"something-else":       config.RoleClient,
+	} {
+		id := AccountIdentity(model.ClientUser{ID: 3, Username: "x", Role: stored})
+		assert.Equal(t, want, id.Role, "stored role %q", stored)
+		assert.Equal(t, "client:3", id.Subject(), "every account uses its namespaced subject")
+	}
+	assert.NotEqual(t, config.RoleOwner, AccountIdentity(model.ClientUser{ID: 1, Role: "owner"}).Role, "no stored value can ever produce the owner")
 }
 
 func TestRequireClient(t *testing.T) {
 	h := RequireClient(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
-	for role, want := range map[string]int{config.RoleClient: http.StatusOK, config.RoleOwner: http.StatusForbidden, config.RoleAdmin: http.StatusForbidden, "": http.StatusForbidden} {
+	for role, want := range map[string]int{config.RoleClient: http.StatusOK, config.RoleOwner: http.StatusForbidden, config.RoleAdmin: http.StatusForbidden, config.RoleViewer: http.StatusForbidden, "": http.StatusForbidden} {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, Identity{Username: "x", Role: role}))
 		rec := httptest.NewRecorder()
@@ -153,40 +223,31 @@ func TestRequireClient(t *testing.T) {
 	}
 }
 
-func TestMiddlewareResolvesCurrentRole(t *testing.T) {
-	store := fakeAdmins{roles: map[string]string{"ana": config.RoleAdmin}}
-	a := New("root", "p", secret, time.Hour, store, nil)
-	var got Identity
-	h := a.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = FromContext(r.Context()) }))
-
-	call := func(user string) int {
-		token, _, _ := a.Issue(user)
+func TestRequireAccount(t *testing.T) {
+	h := RequireAccount(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	id := int64(4)
+	for name, c := range map[string]struct {
+		identity Identity
+		want     int
+	}{
+		"plain user":    {Identity{Username: "u", Role: config.RoleClient, ClientUserID: &id}, http.StatusOK},
+		"administrator": {Identity{Username: "a", Role: config.RoleAdmin, ClientUserID: &id}, http.StatusOK},
+		"viewer":        {Identity{Username: "v", Role: config.RoleViewer, ClientUserID: &id}, http.StatusOK},
+		"the owner":     {Identity{Username: "root", Role: config.RoleOwner}, http.StatusForbidden},
+	} {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})
+		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, c.identity))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
-		return rec.Code
+		assert.Equal(t, c.want, rec.Code, name)
 	}
-
-	assert.Equal(t, http.StatusOK, call("ana"))
-	assert.Equal(t, Identity{Username: "ana", Role: config.RoleAdmin}, got)
-	assert.Equal(t, http.StatusOK, call("root"))
-	assert.Equal(t, config.RoleOwner, got.Role)
-	assert.Equal(t, http.StatusUnauthorized, call("deleted-user"), "removed admins lose access immediately")
-
-	noStore := New("root", "p", secret, time.Hour, nil, nil)
-	token, _, _ := noStore.Issue("ana")
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})
-	rec := httptest.NewRecorder()
-	noStore.Middleware(h).ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
 func TestAllowsAndRequireRole(t *testing.T) {
 	assert.True(t, Allows(config.RoleOwner, config.RoleAdmin))
 	assert.True(t, Allows(config.RoleAdmin, config.RoleAdmin))
 	assert.False(t, Allows(config.RoleViewer, config.RoleAdmin))
+	assert.False(t, Allows(config.RoleClient, config.RoleViewer), "a plain user never passes an admin check")
 	assert.False(t, Allows("", config.RoleViewer))
 	assert.False(t, Allows(config.RoleOwner, "bogus"))
 
@@ -199,35 +260,4 @@ func TestAllowsAndRequireRole(t *testing.T) {
 		assert.Equal(t, want, rec.Code, role)
 	}
 	assert.True(t, newAuth().IsBootstrap("admin"))
-}
-
-// A client who picked the same name as the owner or an administrator must
-// stay a client: their session subject is namespaced by id.
-func TestClientSessionNeverResolvesAsAdminWithTheSameName(t *testing.T) {
-	clients := fakeClients{users: map[string]fakeClientUser{"root": {id: 7, password: "x"}, "bea": {id: 8, password: "x"}}}
-	a := New("root", "p", secret, time.Hour, fakeAdmins{roles: map[string]string{"bea": config.RoleOwner}}, clients)
-	resolve := func(subject string) (Identity, int) {
-		token, _, err := a.Issue(subject)
-		require.NoError(t, err)
-		var got Identity
-		h := a.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = FromContext(r.Context()) }))
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		return got, rec.Code
-	}
-
-	for name, id := range map[string]int64{"root": 7, "bea": 8} {
-		got, code := resolve(ClientIdentity(model.ClientUser{ID: id, Username: name}).Subject())
-		assert.Equal(t, http.StatusOK, code)
-		assert.Equal(t, config.RoleClient, got.Role, "client %q must not become owner/admin", name)
-	}
-	got, _ := resolve("bea")
-	assert.Equal(t, config.RoleOwner, got.Role, "the real admin keeps their plain subject")
-
-	_, code := resolve("client:999")
-	assert.Equal(t, http.StatusUnauthorized, code, "unknown client id")
-	_, code = resolve("client:abc")
-	assert.Equal(t, http.StatusUnauthorized, code, "malformed client subject")
 }

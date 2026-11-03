@@ -73,7 +73,7 @@ export function CredentialsSheet({
       </div>
       <SheetFooter>
         {!credentials.localMode && (
-          <ButtonLink href={`/ayuda?host=${encodeURIComponent(credentials.hostname)}`} target="_blank" rel="noopener noreferrer">
+          <ButtonLink href={`/help?host=${encodeURIComponent(credentials.hostname)}`} target="_blank" rel="noopener noreferrer">
             Ver tutorial
           </ButtonLink>
         )}

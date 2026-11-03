@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { DownloadMinimalisticIcon, RestartIcon, TrashBinMinimalisticIcon } from '@solar-icons/react/linear'
-import { me, type Credentials, type Job } from '../../api'
+import { me, type Account, type Credentials, type Job } from '../../api'
 import { CredentialsSheet } from '../../components/CredentialsSheet'
 import { PageBody, PageHeader } from '../../components/Shell'
 import { Button, ButtonLink, EmptyState, ErrorNote, Loading, Notice, Panel, Sheet, SheetFooter, SheetHeader, Tag, useAction, useLoad } from '../../components/ui'
-import { formatBytes, formatRelative, normalizeName, slugProblem } from '../../format'
+import { databasePreview, formatBytes, formatRelative, nameRoom, normalizeName, slugProblem } from '../../format'
 
 const POLL_MS = 4000
 const POLL_TIMES = 15
@@ -14,6 +14,7 @@ const MAX_PER_DATABASE = 5
 export function MyBackups() {
   const backups = useLoad(me.backups, [])
   const databases = useLoad(me.databases, [])
+  const account = useLoad(me.account, [])
   const [slug, setSlug] = useState('')
   const [waiting, setWaiting] = useState(false)
   const [restoring, setRestoring] = useState<Job | null>(null)
@@ -159,7 +160,7 @@ export function MyBackups() {
         </Panel>
       </PageBody>
 
-      {restoring && <RestoreSheet backup={restoring} onClose={() => setRestoring(null)} onRestored={onRestored} />}
+      {restoring && account.data && <RestoreSheet backup={restoring} account={account.data} onClose={() => setRestoring(null)} onRestored={onRestored} />}
       <Sheet open={removing !== null} onClose={() => setRemoving(null)} labelledBy="rm-backup">
         {removing && (
           <>
@@ -186,11 +187,14 @@ export function MyBackups() {
   )
 }
 
-function RestoreSheet({ backup, onClose, onRestored }: { backup: Job; onClose: () => void; onRestored: (c: Credentials) => void }) {
-  const [raw, setRaw] = useState(`${backup.slug}-copia`)
+function RestoreSheet({ backup, account, onClose, onRestored }: { backup: Job; account: Account; onClose: () => void; onRestored: (c: Credentials) => void }) {
+  // The backup's slug already starts with the user's code; the new name does not repeat it.
+  const original = backup.slug.startsWith(`${account.code}-`) ? backup.slug.slice(account.code.length + 1) : backup.slug
+  const [raw, setRaw] = useState(`${original}-copia`.slice(0, nameRoom(account.code)))
   const { busy, error, run } = useAction()
   const name = normalizeName(raw)
-  const problem = slugProblem(name)
+  const problem = slugProblem(name, nameRoom(account.code))
+  const preview = name && !problem ? databasePreview(account, name) : null
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -209,7 +213,14 @@ function RestoreSheet({ backup, onClose, onRestored }: { backup: Job; onClose: (
             <input className="field font-mono" autoFocus required spellCheck={false} autoCapitalize="none" value={raw} aria-invalid={problem ? 'true' : 'false'} onChange={(e) => setRaw(e.target.value)} />
           </label>
           <p className={`text-[0.85rem] ${problem ? 'text-danger' : 'text-ink-2'}`} aria-live="polite">
-            {problem || 'Cuenta dentro del máximo de bases de tu cuenta.'}
+            {problem ||
+              (preview ? (
+                <>
+                  Se creará como <span className="font-mono text-ink">{preview.slug}</span>. Cuenta dentro del máximo de bases de tu cuenta.
+                </>
+              ) : (
+                'Cuenta dentro del máximo de bases de tu cuenta.'
+              ))}
           </p>
           {error && <ErrorNote message={error} />}
         </div>

@@ -16,14 +16,14 @@ import { SettingsTab } from './SettingsTab'
 import { UsersTab } from './UsersTab'
 
 const tabs: { id: DatabaseTab; label: string; needsActive: boolean }[] = [
-  { id: 'resumen', label: 'Resumen', needsActive: false },
-  { id: 'datos', label: 'Datos', needsActive: true },
-  { id: 'esquema', label: 'Esquema', needsActive: true },
-  { id: 'consola', label: 'Consola SQL', needsActive: true },
-  { id: 'conexion', label: 'Conexión', needsActive: true },
-  { id: 'usuarios', label: 'Usuarios', needsActive: true },
-  { id: 'respaldos', label: 'Respaldos', needsActive: false },
-  { id: 'ajustes', label: 'Ajustes', needsActive: false },
+  { id: 'overview', label: 'Resumen', needsActive: false },
+  { id: 'data', label: 'Datos', needsActive: true },
+  { id: 'schema', label: 'Esquema', needsActive: true },
+  { id: 'console', label: 'Consola SQL', needsActive: true },
+  { id: 'connection', label: 'Conexión', needsActive: true },
+  { id: 'users', label: 'Usuarios', needsActive: true },
+  { id: 'backups', label: 'Respaldos', needsActive: false },
+  { id: 'settings', label: 'Ajustes', needsActive: false },
 ]
 
 export interface TabProps extends PageProps {
@@ -50,7 +50,7 @@ export function DatabaseDetail({ slug, tab, ...props }: PageProps & { slug: stri
 
   const active = db.status !== 'expirada'
   const visible = tabs.filter((t) => active || !t.needsActive)
-  const current = visible.some((t) => t.id === tab) ? tab : 'resumen'
+  const current = visible.some((t) => t.id === tab) ? tab : 'overview'
   const tabProps: TabProps = { ...props, db, onChange: setData, reload }
 
   return (
@@ -68,11 +68,11 @@ export function DatabaseDetail({ slug, tab, ...props }: PageProps & { slug: stri
           active &&
           can.operate(props.session.role) && (
             <>
-              <Button onClick={() => navigate(href({ page: 'database', slug: db.slug, tab: 'datos' }))}>
+              <Button onClick={() => navigate(href({ page: 'database', slug: db.slug, tab: 'data' }))}>
                 <TableIcon size={18} aria-hidden />
                 Ver datos
               </Button>
-              <Button onClick={() => navigate(href({ page: 'database', slug: db.slug, tab: 'consola' }))}>
+              <Button onClick={() => navigate(href({ page: 'database', slug: db.slug, tab: 'console' }))}>
                 <CodeSquareIcon size={18} aria-hidden />
                 Consola SQL
               </Button>
@@ -98,7 +98,7 @@ export function DatabaseDetail({ slug, tab, ...props }: PageProps & { slug: stri
             {backup.error || (
               <>
                 Respaldo en cola. Lo verás en{' '}
-                <a className="underline" href={href({ page: 'database', slug: db.slug, tab: 'respaldos' })} onClick={linkHandler(href({ page: 'database', slug: db.slug, tab: 'respaldos' }))}>
+                <a className="underline" href={href({ page: 'database', slug: db.slug, tab: 'backups' })} onClick={linkHandler(href({ page: 'database', slug: db.slug, tab: 'backups' }))}>
                   Respaldos
                 </a>{' '}
                 en unos segundos.
@@ -127,14 +127,14 @@ export function DatabaseDetail({ slug, tab, ...props }: PageProps & { slug: stri
           </ul>
         </nav>
 
-        {current === 'resumen' && <OverviewTab {...tabProps} />}
-        {current === 'datos' && <DataTab {...tabProps} />}
-        {current === 'esquema' && <SchemaTab {...tabProps} />}
-        {current === 'consola' && <ConsoleTab {...tabProps} />}
-        {current === 'conexion' && <ConnectTab {...tabProps} />}
-        {current === 'usuarios' && <UsersTab {...tabProps} />}
-        {current === 'respaldos' && <BackupsTab {...tabProps} />}
-        {current === 'ajustes' && <SettingsTab {...tabProps} />}
+        {current === 'overview' && <OverviewTab {...tabProps} />}
+        {current === 'data' && <DataTab {...tabProps} />}
+        {current === 'schema' && <SchemaTab {...tabProps} />}
+        {current === 'console' && <ConsoleTab {...tabProps} />}
+        {current === 'connection' && <ConnectTab {...tabProps} />}
+        {current === 'users' && <UsersTab {...tabProps} />}
+        {current === 'backups' && <BackupsTab {...tabProps} />}
+        {current === 'settings' && <SettingsTab {...tabProps} />}
       </PageBody>
     </>
   )

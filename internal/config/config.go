@@ -54,6 +54,9 @@ type Config struct {
 	MaxDatabasesPerUser int
 	// Google holds the OAuth client; whether it is used depends on AuthMode.
 	Google GoogleConfig
+	// LandingURL is the public site that hosts the privacy policy and the
+	// terms of service; the login screen links to it. Empty = no links.
+	LandingURL string
 	// AuthMode is how registered users sign in: password, google or both.
 	// Administrators always use their username and password.
 	AuthMode string
@@ -196,6 +199,7 @@ func Load(getenv Getenv) (*Config, error) {
 	if cfg.Google.Enabled() && cfg.Google.RedirectURL == "" {
 		cfg.Google.RedirectURL = defaultGoogleRedirect(local, cfg.PanelHostname, p.positiveInt(EnvPanelLocalPort, DefaultPanelLocalPort))
 	}
+	cfg.LandingURL = strings.TrimRight(p.value(EnvLandingURL), "/")
 	cfg.AuthMode = strings.ToLower(p.value(EnvAuthMode))
 	if cfg.AuthMode == "" {
 		cfg.AuthMode = AuthModePassword
@@ -294,6 +298,9 @@ func defaultGoogleRedirect(local bool, panelHost string, localPort int) string {
 }
 
 func (p *parser) validate(cfg *Config) {
+	if u := cfg.LandingURL; u != "" && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+		p.invalidf("%s must be an http(s) URL such as https://example.com", EnvLandingURL)
+	}
 	switch cfg.AuthMode {
 	case AuthModePassword:
 	case AuthModeGoogle, AuthModeBoth:

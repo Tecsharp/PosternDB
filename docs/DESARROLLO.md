@@ -26,7 +26,7 @@ Otras medidas:
 | Consola SQL con el rol `posterndb_console`, que **no** es superusuario y entra con `SET ROLE` al dueño de la base. Transacción `READ ONLY`, una sentencia por petición (protocolo extendido), `statement_timeout` de 10 s. Los tests de integración verifican que no puede escribir, ni usar `COPY ... TO PROGRAM` o `pg_read_file`, ni volverse superusuario, ni entrar a otra base | `internal/store/inspector.go` |
 | La contraseña del rol de consola se genera en cada arranque y solo vive en memoria | `cmd/posterndb/main.go` |
 | Abrir una base en el panel no cuenta como actividad: esas sesiones se descuentan del auditor | `auditor.refreshActivity` |
-| Administradores con bcrypt (coste 12), roles verificados en cada petición, tiempo constante también para usuarios inexistentes | `internal/admins` |
+| Cuentas con bcrypt (coste 12), rol (usuario, lector, administrador) leído de la base en cada petición, tiempo constante también para usuarios inexistentes. El propietario viene de `.env` y no es una fila editable | `internal/clients`, `internal/auth` |
 | Descarga de respaldos solo por id de un trabajo terminado; el nombre de archivo se revalida para que no pueda salir del directorio | `provision.BackupPath` |
 | Imagen distroless sin shell, usuario `nonroot` | `Dockerfile` |
 | Secretos solo en `.env` (excluido de git y de la imagen) | `.gitignore`, `.dockerignore` |
@@ -110,7 +110,6 @@ internal/cloudflare/         DNS CNAME + reglas de ingress del túnel (cloudflar
 internal/provision/          orquestador: crear (saga), clonar/restaurar/plantillas, usuarios, expiración, respaldos
 internal/auditor/            goroutine de auditoría de inactividad
 internal/auth/               JWT, cookie de sesión, roles, CSRF, rate limiting
-internal/admins/             administradores del panel (bcrypt, roles)
 internal/notify/             avisos por webhook y SMTP
 internal/httpapi/            router chi, handlers JSON, SPA embebida
 internal/testsupport/        fakes en memoria para los tests

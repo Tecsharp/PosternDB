@@ -325,7 +325,6 @@ type FakeMetadata struct {
 	Users       map[int64]*model.DatabaseUser
 	Jobs        []model.Job
 	Templates   map[int64]*model.Template
-	Admins      map[string]*model.Admin
 	Internal    map[string]int
 	Settings    model.PlatformSettings
 	ClientUsers map[int64]*model.ClientUser
@@ -340,7 +339,7 @@ type FakeMetadata struct {
 func NewFakeMetadata() *FakeMetadata {
 	return &FakeMetadata{
 		Rows: map[int64]*model.ClientDatabase{}, Users: map[int64]*model.DatabaseUser{},
-		Templates: map[int64]*model.Template{}, Admins: map[string]*model.Admin{}, Internal: map[string]int{},
+		Templates: map[int64]*model.Template{}, Internal: map[string]int{},
 		ClientUsers: map[int64]*model.ClientUser{},
 	}
 }
@@ -744,6 +743,9 @@ func (m *FakeMetadata) GetClientUser(_ context.Context, id int64) (model.ClientU
 func (m *FakeMetadata) GetClientUserByUsername(_ context.Context, username string) (model.ClientUser, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.FailList {
+		return model.ClientUser{}, ErrInjected
+	}
 	for _, u := range m.ClientUsers {
 		if u.Username == username {
 			return *u, nil
@@ -760,13 +762,19 @@ func (m *FakeMetadata) CreateClientUser(_ context.Context, n model.NewClientUser
 		return model.ClientUser{}, ErrInjected
 	}
 	for _, u := range m.ClientUsers {
-		if u.Username == n.Username || (n.Email != "" && strings.EqualFold(u.Email, n.Email)) || (n.GoogleSub != "" && u.GoogleSub == n.GoogleSub) {
+		if u.Username == n.Username || (n.Email != "" && strings.EqualFold(u.Email, n.Email)) || (n.GoogleSub != "" && u.GoogleSub == n.GoogleSub) || (n.Code != "" && u.Code == n.Code) {
 			return model.ClientUser{}, model.ErrConflict
 		}
 	}
+	if n.Code == "" {
+		n.Code = model.NewClientCode()
+	}
+	if n.Role == "" {
+		n.Role = config.AccountRoleUser
+	}
 	m.nextUserID++
 	u := model.ClientUser{ID: m.nextUserID, Username: n.Username, Email: n.Email, FullName: n.FullName,
-		PasswordHash: n.PasswordHash, GoogleSub: n.GoogleSub, CreatedBy: n.CreatedBy, NeedsUsername: n.NeedsUsername}
+		PasswordHash: n.PasswordHash, GoogleSub: n.GoogleSub, CreatedBy: n.CreatedBy, NeedsUsername: n.NeedsUsername, Code: n.Code, Role: n.Role}
 	if n.EmailVerified {
 		now := time.Now()
 		u.EmailVerifiedAt = &now
@@ -829,6 +837,16 @@ func (m *FakeMetadata) SetClientUsername(_ context.Context, id int64, username s
 	err := m.clientUser(id, func(u *model.ClientUser) {
 		u.Username = username
 		u.NeedsUsername = false
+		out = *u
+	})
+	return out, err
+}
+
+// SetClientRole stores the role of an account.
+func (m *FakeMetadata) SetClientRole(_ context.Context, id int64, role string) (model.ClientUser, error) {
+	var out model.ClientUser
+	err := m.clientUser(id, func(u *model.ClientUser) {
+		u.Role = role
 		out = *u
 	})
 	return out, err
@@ -916,82 +934,6 @@ func (m *FakeMetadata) ListByClientUser(_ context.Context, clientUserID int64) (
 func (m *FakeMetadata) CountByClientUser(_ context.Context, clientUserID int64) (int, error) {
 	dbs, err := m.ListByClientUser(context.Background(), clientUserID)
 	return len(dbs), err
-}
-
-// ---- admins --------------------------------------------------------------------------------
-
-// ListAdmins returns stored admins.
-func (m *FakeMetadata) ListAdmins(context.Context) ([]model.Admin, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.FailList {
-		return nil, ErrInjected
-	}
-	out := []model.Admin{}
-	for _, a := range m.Admins {
-		out = append(out, *a)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
-	return out, nil
-}
-
-// GetAdmin finds an admin.
-func (m *FakeMetadata) GetAdmin(_ context.Context, username string) (model.Admin, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.FailList {
-		return model.Admin{}, ErrInjected
-	}
-	if a, ok := m.Admins[username]; ok {
-		return *a, nil
-	}
-	return model.Admin{}, model.ErrNotFound
-}
-
-// CreateAdmin stores an admin.
-func (m *FakeMetadata) CreateAdmin(_ context.Context, a model.Admin) (model.Admin, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.Admins[a.Username]; ok {
-		return a, model.ErrConflict
-	}
-	a.ID = m.id()
-	m.Admins[a.Username] = &a
-	return a, nil
-}
-
-func (m *FakeMetadata) admin(username string, fn func(*model.Admin)) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.FailUpdate {
-		return ErrInjected
-	}
-	a, ok := m.Admins[username]
-	if !ok {
-		return model.ErrNotFound
-	}
-	fn(a)
-	return nil
-}
-
-// UpdateAdminRole changes a role.
-func (m *FakeMetadata) UpdateAdminRole(_ context.Context, username, role string) error {
-	return m.admin(username, func(a *model.Admin) { a.Role = role })
-}
-
-// UpdateAdminPassword stores a hash.
-func (m *FakeMetadata) UpdateAdminPassword(_ context.Context, username, hash string) error {
-	return m.admin(username, func(a *model.Admin) { a.PasswordHash = hash })
-}
-
-// TouchAdminLogin records a login.
-func (m *FakeMetadata) TouchAdminLogin(_ context.Context, username string, at time.Time) error {
-	return m.admin(username, func(a *model.Admin) { a.LastLoginAt = &at })
-}
-
-// DeleteAdmin removes an admin.
-func (m *FakeMetadata) DeleteAdmin(_ context.Context, username string) error {
-	return m.admin(username, func(*model.Admin) { delete(m.Admins, username) })
 }
 
 // ---- secrets & notifications -------------------------------------------------------------------

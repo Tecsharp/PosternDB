@@ -52,6 +52,8 @@ var (
 	ErrRegisterDisabled    = errors.New("el registro de usuarios está desactivado")
 	ErrGoogleUnverified    = errors.New("Google no confirmó que ese correo sea tuyo")
 	ErrGoogleMismatch      = errors.New("ese correo ya está vinculado a otra cuenta de Google")
+	ErrRole                = errors.New("rol inválido: usa user, viewer o admin")
+	ErrSelfRole            = errors.New("no puedes cambiar tu propio rol")
 )
 
 // Store is the persistence the service needs.
@@ -65,6 +67,7 @@ type Store interface {
 	LinkClientGoogle(ctx context.Context, id int64, sub string, verifyEmail bool) (model.ClientUser, error)
 	SetClientUsername(ctx context.Context, id int64, username string) (model.ClientUser, error)
 	SetClientFullName(ctx context.Context, id int64, fullName string) (model.ClientUser, error)
+	SetClientRole(ctx context.Context, id int64, role string) (model.ClientUser, error)
 	UpdateClientUserPassword(ctx context.Context, id int64, hash string) error
 	TouchClientUserLogin(ctx context.Context, id int64, at time.Time) error
 	SetClientUserExpiry(ctx context.Context, id int64, never bool, maxIdleDays *int, actor string) (model.ClientUser, error)
@@ -164,7 +167,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (model.ClientU
 	if err != nil {
 		return model.ClientUser{}, err
 	}
-	u, err := s.store.CreateClientUser(ctx, model.NewClientUser{
+	u, err := s.createUser(ctx, model.NewClientUser{
 		Username: email, Email: email, FullName: name, PasswordHash: hash, EmailUseAccepted: true,
 	})
 	if err != nil {
@@ -193,12 +196,33 @@ func (s *Service) Create(ctx context.Context, email, fullName, actor string) (mo
 	if err != nil {
 		return model.ClientUser{}, "", err
 	}
-	u, err := s.store.CreateClientUser(ctx, model.NewClientUser{Username: clean, Email: clean, FullName: name, PasswordHash: hash, CreatedBy: actor})
+	u, err := s.createUser(ctx, model.NewClientUser{Username: clean, Email: clean, FullName: name, PasswordHash: hash, CreatedBy: actor})
 	if err != nil {
 		return u, "", emailTaken(err)
 	}
 	s.audit(ctx, actor, config.ActionClientCreated, clean, nil)
 	return u, password, nil
+}
+
+const codeAttempts = 5
+
+// createUser inserts the account with a fresh personal code. If the insert
+// conflicts, it checks whether the email is the cause (then it is really
+// taken) and otherwise tries again with another code.
+func (s *Service) createUser(ctx context.Context, n model.NewClientUser) (model.ClientUser, error) {
+	for attempt := 0; attempt < codeAttempts; attempt++ {
+		n.Code = model.NewClientCode()
+		u, err := s.store.CreateClientUser(ctx, n)
+		if !errors.Is(err, model.ErrConflict) {
+			return u, err
+		}
+		if n.Email != "" {
+			if _, lookup := s.store.GetClientUserByEmail(ctx, n.Email); lookup == nil {
+				return u, err
+			}
+		}
+	}
+	return model.ClientUser{}, model.ErrConflict
 }
 
 func emailTaken(err error) error {
@@ -281,7 +305,7 @@ func (s *Service) LoginWithGoogle(ctx context.Context, g oauth.Profile) (model.C
 	if utf8.RuneCountInString(name) < minNameChars {
 		name = strings.SplitN(email, "@", 2)[0]
 	}
-	created, err := s.store.CreateClientUser(ctx, model.NewClientUser{
+	created, err := s.createUser(ctx, model.NewClientUser{
 		Username: email, Email: email, FullName: truncate(name, maxNameChars), GoogleSub: g.Subject,
 		EmailVerified: true, EmailUseAccepted: true, NeedsUsername: true,
 	})
@@ -350,6 +374,49 @@ func (s *Service) SetUsername(ctx context.Context, id int64, raw string) (model.
 	}
 	s.audit(ctx, name, config.ActionClientUsernameChanged, name, map[string]any{"from": old.Username})
 	return u, nil
+}
+
+// ValidRole reports whether role can be stored on an account. The owner is
+// not an account, so there is no role that could ever point at it.
+func ValidRole(role string) bool {
+	return role == config.AccountRoleUser || role == config.RoleViewer || role == config.RoleAdmin
+}
+
+// Staff returns the accounts that can open the admin panel.
+func (s *Service) Staff(ctx context.Context) ([]model.ClientUser, error) {
+	all, err := s.store.ListClientUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	staff := make([]model.ClientUser, 0, len(all))
+	for _, u := range all {
+		if u.Role == config.RoleAdmin || u.Role == config.RoleViewer {
+			staff = append(staff, u)
+		}
+	}
+	return staff, nil
+}
+
+// SetRole gives an account a role: admin and viewer open the admin panel, user
+// closes it again. Nobody changes their own role, so the last person who can
+// manage roles cannot lock themselves out by accident.
+func (s *Service) SetRole(ctx context.Context, id int64, role string, actorID int64, actor string) (model.ClientUser, error) {
+	if !ValidRole(role) {
+		return model.ClientUser{}, ErrRole
+	}
+	if id == actorID {
+		return model.ClientUser{}, ErrSelfRole
+	}
+	before, err := s.store.GetClientUser(ctx, id)
+	if err != nil {
+		return before, err
+	}
+	saved, err := s.store.SetClientRole(ctx, id, role)
+	if err != nil {
+		return saved, err
+	}
+	s.audit(ctx, actor, config.ActionRoleChanged, saved.Username, map[string]any{"from": before.Role, "to": role})
+	return saved, nil
 }
 
 // SetFullName lets a person correct their name.

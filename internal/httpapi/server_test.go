@@ -17,8 +17,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
 
-	"github.com/tecsharp/posterndb/internal/admins"
 	"github.com/tecsharp/posterndb/internal/auth"
 	"github.com/tecsharp/posterndb/internal/clients"
 	"github.com/tecsharp/posterndb/internal/config"
@@ -63,7 +63,7 @@ func newEnvWith(t *testing.T, health error, google GoogleAuth) env {
 
 // newEnvFull also picks AUTH_MODE: in google mode registered users have no
 // password login at all.
-func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string) env {
+func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string, tweaks ...func(*Settings)) env {
 	t.Helper()
 	e := env{
 		meta:     testsupport.NewFakeMetadata(),
@@ -73,13 +73,12 @@ func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string) env 
 		notifier: &testsupport.FakeNotifier{},
 		backups:  t.TempDir(),
 	}
-	e.meta.Admins[viewer] = &model.Admin{Username: viewer, Role: config.RoleViewer}
-	e.meta.Admins[operator] = &model.Admin{Username: operator, Role: config.RoleAdmin}
+	e.account(t, viewer, config.RoleViewer)
+	e.account(t, operator, config.RoleAdmin)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	adminSvc := admins.New(e.meta, testsupport.FakeSecrets{}, adminUser)
 	clientSvc := clients.New(e.meta, testsupport.FakeSecrets{}, true)
-	e.auth = auth.New(adminUser, adminPass, strings.Repeat("k", 32), time.Hour, adminSvc, clientSvc)
-	e.auth.SetClientPasswordLogin(mode != config.AuthModeGoogle)
+	e.auth = auth.New(adminUser, adminPass, strings.Repeat("k", 32), time.Hour, clientSvc)
+	e.auth.SetUserPasswordLogin(mode != config.AuthModeGoogle)
 	svc := provision.New(e.meta, e.cluster, e.cf, e.insp, testsupport.FakeSecrets{}, provision.Options{
 		Resolver:           naming.Resolver{BaseDomain: "pachislab.com", HostPrefix: "postern-", PanelHostname: "postern.pachislab.com"},
 		Policy:             expiry.Policy{MaxIdle: 30 * 24 * time.Hour, WarnBefore: 7 * 24 * time.Hour},
@@ -89,17 +88,20 @@ func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string) env 
 		BackupDir:          e.backups,
 		Logger:             logger,
 	})
+	settings := Settings{BaseDomain: "pachislab.com", ClientHostPrefix: "postern-", ExampleHostname: "postern-cliente1.pachislab.com", ExpirationDays: 30, AllowSelfRegister: true, MaxDatabasesPerClient: 3, AuthMode: mode}
+	for _, tweak := range tweaks {
+		tweak(&settings)
+	}
 	e.handler = NewRouter(Deps{
 		Auth:      e.auth,
 		Limiter:   auth.NewRateLimiter(config.LoginRatePerMinute, config.LoginRateBurst),
 		Databases: svc,
-		Admins:    adminSvc,
 		Clients:   clientSvc,
 		Google:    google,
 		Audit:     e.meta,
 		Health:    pinger{err: health},
 		Notifier:  e.notifier,
-		Settings:  Settings{BaseDomain: "pachislab.com", ExampleHostname: "postern-cliente1.pachislab.com", ExpirationDays: 30, AllowSelfRegister: true, MaxDatabasesPerClient: 3, AuthMode: mode},
+		Settings:  settings,
 		Static: fstest.MapFS{
 			"index.html":        {Data: []byte("<html>panel</html>")},
 			"assets/app-abc.js": {Data: []byte("console.log(1)")},
@@ -107,6 +109,19 @@ func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string) env 
 		Logger: logger,
 	})
 	return e
+}
+
+const accountPass = "account-password-123"
+
+// account creates an account with the given role (user, viewer or admin) whose
+// password is accountPass.
+func (e env) account(t *testing.T, username, role string) model.ClientUser {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte(accountPass), bcrypt.MinCost)
+	require.NoError(t, err)
+	u, err := e.meta.CreateClientUser(context.Background(), model.NewClientUser{Username: username, PasswordHash: string(hash), Role: role})
+	require.NoError(t, err)
+	return u
 }
 
 type req struct {
@@ -133,7 +148,7 @@ func (e env) do(t *testing.T, method, path string, o req) *httptest.ResponseReco
 		subject := o.as
 		for _, u := range e.meta.ClientUsers {
 			if u.Username == o.as {
-				subject = auth.ClientIdentity(*u).Subject()
+				subject = auth.AccountIdentity(*u).Subject()
 			}
 		}
 		token, _, err := e.auth.Issue(subject)
@@ -214,13 +229,21 @@ func TestLoginBootstrapOwner(t *testing.T) {
 	assert.Equal(t, []string{config.ActionLoginSuccess}, e.meta.Actions())
 }
 
-func TestLoginStoredAdmin(t *testing.T) {
+func TestLoginPromotedAccount(t *testing.T) {
 	e := newEnv(t, nil)
-	created := decode[map[string]any](t, e.owner(t, http.MethodPost, "/api/admins", `{"username":"ana","role":"viewer"}`))
+	created := decode[map[string]any](t, e.owner(t, http.MethodPost, "/api/clients", `{"email":"ana@example.com","fullName":"Ana López"}`))
 	password := created["password"].(string)
-	rec := e.do(t, http.MethodPost, "/api/auth/login", req{body: `{"username":"ana","password":"` + password + `"}`})
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, config.RoleViewer, decode[map[string]any](t, rec)["role"])
+	id := int64(created["client"].(map[string]any)["id"].(float64))
+
+	login := func() map[string]any {
+		rec := e.do(t, http.MethodPost, "/api/auth/login", req{body: `{"username":"ana@example.com","password":"` + password + `"}`, ip: "203.0.113.50"})
+		require.Equal(t, http.StatusOK, rec.Code)
+		return decode[map[string]any](t, rec)
+	}
+	assert.Equal(t, config.RoleClient, login()["role"], "a new account is a plain user")
+
+	require.Equal(t, http.StatusOK, e.owner(t, http.MethodPut, "/api/clients/"+itoa(id)+"/role", `{"role":"viewer"}`).Code)
+	assert.Equal(t, config.RoleViewer, login()["role"], "the same credentials now open the admin panel, read-only")
 }
 
 func TestLoginIgnoresSurroundingWhitespace(t *testing.T) {
@@ -293,6 +316,7 @@ func TestLogoutAndSession(t *testing.T) {
 func TestRoleMatrix(t *testing.T) {
 	e := newEnv(t, nil)
 	e.createDB(t, "acme")
+	victim := itoa(e.account(t, "victim1", config.AccountRoleUser).ID)
 	cases := []struct {
 		method, path, body string
 		viewerCode         int
@@ -303,18 +327,21 @@ func TestRoleMatrix(t *testing.T) {
 		{http.MethodPost, "/api/databases/acme/query", `{"sql":"SELECT 1"}`, 403, 200},
 		{http.MethodGet, "/api/databases/acme/tables/public/x/rows", "", 403, 200},
 		{http.MethodPost, "/api/databases", `{"name":"other"}`, 403, 201},
-		{http.MethodGet, "/api/admins", "", 403, 403},
-		{http.MethodPost, "/api/admins", `{"username":"zed","role":"viewer"}`, 403, 403},
-		// Only the panel owner touches the inactivity policy, global or per-database.
+		{http.MethodGet, "/api/admins", "", 403, 200},
+		{http.MethodGet, "/api/activity/me", "", 200, 200},
+		// Only the panel owner touches the inactivity policy, global, per database or per user.
 		{http.MethodPut, "/api/databases/acme/expiry", `{"neverExpires":true,"maxIdleDays":null}`, 403, 403},
 		{http.MethodPost, "/api/databases/acme/extend", `{"days":10}`, 403, 403},
 		{http.MethodGet, "/api/settings/expiry", "", 403, 403},
 		{http.MethodPut, "/api/settings/expiry", `{"expirationDays":45,"expiringSoonDays":10}`, 403, 403},
-		{http.MethodGet, "/api/clients", "", 403, 403},
-		{http.MethodPost, "/api/clients", `{"email":"ana@example.com","fullName":"Ana López"}`, 403, 403},
-		{http.MethodPost, "/api/clients/1/password", "", 403, 403},
-		{http.MethodPut, "/api/clients/1/expiry", `{"neverExpires":true}`, 403, 403},
-		{http.MethodDelete, "/api/clients/1", "", 403, 403},
+		{http.MethodPut, "/api/clients/" + victim + "/expiry", `{"neverExpires":true}`, 403, 403},
+		// Administrators manage users and give roles; viewers only read.
+		{http.MethodGet, "/api/clients", "", 403, 200},
+		{http.MethodPost, "/api/clients", `{"email":"ana@example.com","fullName":"Ana López"}`, 403, 201},
+		{http.MethodGet, "/api/clients/" + victim + "/activity", "", 403, 200},
+		{http.MethodPost, "/api/clients/" + victim + "/password", "", 403, 200},
+		{http.MethodPut, "/api/clients/" + victim + "/role", `{"role":"viewer"}`, 403, 200},
+		{http.MethodDelete, "/api/clients/" + victim, "", 403, 204},
 	}
 	for _, c := range cases {
 		assert.Equal(t, c.viewerCode, e.do(t, c.method, c.path, req{body: c.body, as: viewer}).Code, "viewer %s %s", c.method, c.path)
@@ -429,7 +456,8 @@ func TestClientsEndpoints(t *testing.T) {
 	e := newEnv(t, nil)
 
 	empty := decode[struct{ Clients []model.ClientUser }](t, e.owner(t, http.MethodGet, "/api/clients", ""))
-	assert.Empty(t, empty.Clients)
+	staff := len(empty.Clients) // the harness's viewer and administrator are accounts too
+	assert.Equal(t, 2, staff)
 
 	rec := e.owner(t, http.MethodPost, "/api/clients", `{"email":"ana@example.com","fullName":"Ana López"}`)
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
@@ -446,9 +474,15 @@ func TestClientsEndpoints(t *testing.T) {
 	assert.True(t, saved.NeverExpires)
 
 	list := decode[struct{ Clients []model.ClientUser }](t, e.owner(t, http.MethodGet, "/api/clients", ""))
-	require.Len(t, list.Clients, 1)
-	assert.Equal(t, "ana@example.com", list.Clients[0].Username)
-	assert.Equal(t, "Ana López", list.Clients[0].FullName)
+	require.Len(t, list.Clients, staff+1)
+	var ana model.ClientUser
+	for _, c := range list.Clients {
+		if c.ID == anaID {
+			ana = c
+		}
+	}
+	assert.Equal(t, "ana@example.com", ana.Username)
+	assert.Equal(t, "Ana López", ana.FullName)
 
 	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPost, "/api/clients", `{"email":"nope","fullName":"Ana López"}`).Code)
 	assert.Equal(t, http.StatusConflict, e.owner(t, http.MethodPost, "/api/clients", `{"email":"ANA@example.com","fullName":"Otra Ana"}`).Code)
@@ -568,29 +602,116 @@ func TestTemplatesEndpoints(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodDelete, "/api/templates/x", "").Code)
 }
 
-func TestAdminsEndpoints(t *testing.T) {
+func TestAdminsAreAccountsWithARole(t *testing.T) {
 	e := newEnv(t, nil)
-	list := decode[struct{ Admins []model.Admin }](t, e.owner(t, http.MethodGet, "/api/admins", ""))
-	assert.True(t, list.Admins[0].Bootstrap)
+	list := decode[struct {
+		Owner  struct{ Username string }
+		Admins []model.ClientUser
+	}](t, e.owner(t, http.MethodGet, "/api/admins", ""))
+	assert.Equal(t, adminUser, list.Owner.Username, "the owner comes from .env and is always listed")
+	roles := map[string]string{}
+	for _, a := range list.Admins {
+		roles[a.Username] = a.Role
+	}
+	assert.Equal(t, map[string]string{viewer: config.RoleViewer, operator: config.RoleAdmin}, roles, "only people with a role, never plain users")
 
-	rec := e.owner(t, http.MethodPost, "/api/admins", `{"username":"ana","role":"admin"}`)
-	require.Equal(t, http.StatusCreated, rec.Code)
-	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
-	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPost, "/api/admins", `{"username":"x","role":"admin"}`).Code)
+	// Give a role to someone who already has an account, from the list: no second account appears.
+	ana := e.account(t, "ana", config.AccountRoleUser)
+	before := len(e.meta.ClientUsers)
+	rec := e.owner(t, http.MethodPut, "/api/clients/"+itoa(ana.ID)+"/role", `{"role":"admin"}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, config.RoleAdmin, decode[model.ClientUser](t, rec).Role)
+	assert.Len(t, e.meta.ClientUsers, before, "promoting an existing user does not create another account")
 
-	assert.Equal(t, http.StatusNoContent, e.owner(t, http.MethodPatch, "/api/admins/ana", `{"role":"viewer"}`).Code)
-	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPatch, "/api/admins/admin", `{"role":"viewer"}`).Code, "bootstrap is immutable")
-	rec = e.owner(t, http.MethodPost, "/api/admins/ana/password", "")
-	require.Equal(t, http.StatusOK, rec.Code)
-	newPass := decode[map[string]string](t, rec)["password"]
+	// An administrator can do it too, but nobody can change their own role.
+	assert.Equal(t, http.StatusOK, e.do(t, http.MethodPut, "/api/clients/"+itoa(ana.ID)+"/role", req{body: `{"role":"viewer"}`, as: operator}).Code)
+	self := e.meta.ClientUsers
+	var operatorID int64
+	for id, u := range self {
+		if u.Username == operator {
+			operatorID = id
+		}
+	}
+	assert.Equal(t, http.StatusBadRequest, e.do(t, http.MethodPut, "/api/clients/"+itoa(operatorID)+"/role", req{body: `{"role":"user"}`, as: operator}).Code, "no self-demotion")
 
-	rec = e.do(t, http.MethodPost, "/api/auth/password", req{body: `{"current":"` + newPass + `","next":"a-brand-new-password"}`, as: "ana"})
+	// Only valid roles; the owner is not something a role can name.
+	for _, bad := range []string{`{"role":"owner"}`, `{"role":"root"}`, `{"role":""}`} {
+		assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPut, "/api/clients/"+itoa(ana.ID)+"/role", bad).Code, bad)
+	}
+	assert.Equal(t, http.StatusNotFound, e.owner(t, http.MethodPut, "/api/clients/9999/role", `{"role":"admin"}`).Code)
+	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPut, "/api/clients/0/role", `{"role":"admin"}`).Code, "the owner has no account to edit")
+
+	// Demoting closes the admin panel again.
+	require.Equal(t, http.StatusOK, e.owner(t, http.MethodPut, "/api/clients/"+itoa(ana.ID)+"/role", `{"role":"user"}`).Code)
+	assert.Equal(t, http.StatusForbidden, e.do(t, http.MethodGet, "/api/databases", req{as: "ana"}).Code)
+	assert.Contains(t, e.meta.Actions(), config.ActionRoleChanged)
+}
+
+func TestPromotedAccountOpensTheAdminPanelWithTheSameSession(t *testing.T) {
+	e := newEnv(t, nil)
+	bea := e.account(t, "bea", config.AccountRoleUser)
+	assert.Equal(t, http.StatusForbidden, e.do(t, http.MethodGet, "/api/databases", req{as: "bea"}).Code, "a plain user has no admin panel")
+	assert.Equal(t, http.StatusOK, e.do(t, http.MethodGet, "/api/me/databases", req{as: "bea"}).Code)
+
+	require.Equal(t, http.StatusOK, e.owner(t, http.MethodPut, "/api/clients/"+itoa(bea.ID)+"/role", `{"role":"admin"}`).Code)
+	assert.Equal(t, http.StatusOK, e.do(t, http.MethodGet, "/api/databases", req{as: "bea"}).Code, "the very next request already opens it")
+	assert.Equal(t, http.StatusForbidden, e.do(t, http.MethodGet, "/api/me/databases", req{as: "bea"}).Code, "and the reduced panel closes")
+	assert.Equal(t, http.StatusOK, e.do(t, http.MethodGet, "/api/clients", req{as: "bea"}).Code, "an administrator manages users")
+	assert.Equal(t, http.StatusForbidden, e.do(t, http.MethodPut, "/api/clients/"+itoa(bea.ID)+"/expiry", req{body: `{"neverExpires":true}`, as: "bea"}).Code, "but the inactivity policy stays with the owner")
+
+	s := decode[map[string]any](t, e.do(t, http.MethodGet, "/api/auth/session", req{as: "bea"}))
+	assert.Equal(t, config.RoleAdmin, s["role"])
+	assert.Equal(t, false, s["bootstrap"])
+}
+
+func TestAdministratorsCannotActAgainstTheOwner(t *testing.T) {
+	e := newEnv(t, nil)
+	s := decode[map[string]any](t, e.do(t, http.MethodGet, "/api/auth/session", req{as: adminUser}))
+	assert.Equal(t, config.RoleOwner, s["role"], "the real owner")
+	// Even an account that takes the owner's username is just an account: it never gets owner powers.
+	impostor := e.account(t, adminUser, config.RoleAdmin)
+
+	token, _, err := e.auth.Issue(auth.AccountIdentity(impostor).Subject())
+	require.NoError(t, err)
+	r := httptest.NewRequest(http.MethodPut, "/api/settings/expiry", strings.NewReader(`{"expirationDays":1}`))
+	r.Header.Set(config.HeaderRequestedWith, config.RequestedWithValue)
+	r.Header.Set(config.HeaderContentType, config.MimeJSON)
+	r.AddCookie(&http.Cookie{Name: config.SessionCookieName, Value: token})
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, r)
+	assert.Equal(t, http.StatusForbidden, rec.Code, "an account named like the owner has no owner powers")
+
+	// The owner's row is fixed: it cannot be listed as editable, role-changed or deleted through accounts.
+	for _, id := range []string{"0", "-1", "abc"} {
+		assert.NotEqual(t, http.StatusOK, e.do(t, http.MethodPut, "/api/clients/"+id+"/role", req{body: `{"role":"user"}`, as: operator}).Code, id)
+		assert.NotEqual(t, http.StatusNoContent, e.do(t, http.MethodDelete, "/api/clients/"+id, req{as: operator}).Code, id)
+	}
+}
+
+func TestChangingYourOwnPasswordAsAnAdministrator(t *testing.T) {
+	e := newEnv(t, nil)
+	rec := e.do(t, http.MethodPost, "/api/auth/password", req{body: `{"current":"` + accountPass + `","next":"a-brand-new-password"}`, as: operator})
 	assert.Equal(t, http.StatusNoContent, rec.Code)
-	rec = e.do(t, http.MethodPost, "/api/auth/password", req{body: `{"current":"x","next":"short"}`, as: "ana"})
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, e.do(t, http.MethodPost, "/api/auth/password", req{body: `{"current":"` + accountPass + `","next":"another-brand-new-password"}`, as: operator}).Code, "the old password no longer works")
+	assert.Equal(t, http.StatusBadRequest, e.do(t, http.MethodPost, "/api/auth/password", req{body: `{"current":"a-brand-new-password","next":"short"}`, as: operator}).Code)
 
-	assert.Equal(t, http.StatusNoContent, e.owner(t, http.MethodDelete, "/api/admins/ana", "").Code)
-	assert.Equal(t, http.StatusNotFound, e.owner(t, http.MethodDelete, "/api/admins/ana", "").Code)
+	owner := e.do(t, http.MethodPost, "/api/auth/password", req{body: `{"current":"x","next":"a-brand-new-password"}`, as: adminUser})
+	assert.Equal(t, http.StatusBadRequest, owner.Code)
+	assert.Contains(t, owner.Body.String(), ".env", "the owner's password lives in .env")
+}
+
+func TestAdministratorsDeleteOthersButNotThemselves(t *testing.T) {
+	e := newEnv(t, nil)
+	victim := e.account(t, "victim", config.AccountRoleUser)
+	var operatorID int64
+	for id, u := range e.meta.ClientUsers {
+		if u.Username == operator {
+			operatorID = id
+		}
+	}
+	assert.Equal(t, http.StatusBadRequest, e.do(t, http.MethodDelete, "/api/clients/"+itoa(operatorID), req{as: operator}).Code, "not your own account")
+	assert.Equal(t, http.StatusNoContent, e.do(t, http.MethodDelete, "/api/clients/"+itoa(victim.ID), req{as: operator}).Code)
+	assert.Equal(t, http.StatusNotFound, e.do(t, http.MethodDelete, "/api/clients/"+itoa(victim.ID), req{as: operator}).Code)
 }
 
 func TestNotificationsAndSettings(t *testing.T) {
@@ -643,4 +764,30 @@ func TestDataEditorEndpoints(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPost, base, `not json`).Code)
 	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodPatch, base, `[]`).Code)
 	assert.Equal(t, http.StatusBadRequest, e.owner(t, http.MethodDelete, base, `x`).Code)
+}
+
+func TestActivityIsPerPerson(t *testing.T) {
+	e := newEnv(t, nil)
+	ana := e.account(t, "ana", config.AccountRoleUser)
+	// The administrator acts on Ana's account; the owner acts on nothing of hers.
+	require.Equal(t, http.StatusOK, e.do(t, http.MethodPut, "/api/clients/"+itoa(ana.ID)+"/role", req{body: `{"role":"viewer"}`, as: operator}).Code)
+	e.owner(t, http.MethodPost, "/api/clients", `{"email":"otro@example.com","fullName":"Otro"}`)
+
+	type feed struct{ Entries []model.AuditEntry }
+	mine := decode[feed](t, e.do(t, http.MethodGet, "/api/activity/me", req{as: operator}))
+	require.NotEmpty(t, mine.Entries, "an administrator sees what they did")
+	for _, en := range mine.Entries {
+		assert.True(t, en.Actor == operator || en.Target == operator, "only entries about this person: %+v", en)
+	}
+	for _, en := range decode[feed](t, e.owner(t, http.MethodGet, "/api/activity/me", "")).Entries {
+		assert.Equal(t, adminUser, en.Actor, "the owner's feed is what was done under the .env name")
+	}
+
+	about := decode[feed](t, e.do(t, http.MethodGet, "/api/clients/"+itoa(ana.ID)+"/activity", req{as: operator}))
+	require.NotEmpty(t, about.Entries)
+	for _, en := range about.Entries {
+		assert.Equal(t, "ana", en.Target)
+	}
+	assert.Equal(t, http.StatusForbidden, e.do(t, http.MethodGet, "/api/clients/"+itoa(ana.ID)+"/activity", req{as: "ana"}).Code, "plain users cannot read others' feeds")
+	assert.Equal(t, http.StatusNotFound, e.owner(t, http.MethodGet, "/api/clients/9999/activity", "").Code)
 }

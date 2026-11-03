@@ -21,10 +21,10 @@ export type Route =
   | { page: 'my-settings' }
   | { page: 'help' }
 
-export const databaseTabs = ['resumen', 'datos', 'esquema', 'consola', 'conexion', 'usuarios', 'respaldos', 'ajustes'] as const
+export const databaseTabs = ['overview', 'data', 'schema', 'console', 'connection', 'users', 'backups', 'settings'] as const
 export type DatabaseTab = (typeof databaseTabs)[number]
 
-export const myDatabaseTabs = ['resumen', 'datos', 'esquema', 'conexion', 'ajustes'] as const
+export const myDatabaseTabs = ['overview', 'data', 'schema', 'connection', 'settings'] as const
 export type MyDatabaseTab = (typeof myDatabaseTabs)[number]
 
 export function parse(path: string): Route {
@@ -32,7 +32,7 @@ export function parse(path: string): Route {
   switch (parts[0]) {
     case 'databases':
       if (parts[1]) {
-        const tab = (databaseTabs as readonly string[]).includes(parts[2] ?? '') ? (parts[2] as DatabaseTab) : 'resumen'
+        const tab = (databaseTabs as readonly string[]).includes(parts[2] ?? '') ? (parts[2] as DatabaseTab) : 'overview'
         return { page: 'database', slug: parts[1], tab }
       }
       return { page: 'databases' }
@@ -44,21 +44,21 @@ export function parse(path: string): Route {
     case 'expiry':
     case 'settings':
       return { page: parts[0] }
-    case 'mis-bases':
+    case 'my-databases':
       if (parts[1]) {
-        const tab = (myDatabaseTabs as readonly string[]).includes(parts[2] ?? '') ? (parts[2] as MyDatabaseTab) : 'resumen'
+        const tab = (myDatabaseTabs as readonly string[]).includes(parts[2] ?? '') ? (parts[2] as MyDatabaseTab) : 'overview'
         return { page: 'my-database', slug: parts[1], tab }
       }
       return { page: 'my-databases' }
-    case 'mis-respaldos':
+    case 'my-backups':
       return { page: 'my-backups' }
-    case 'mi-actividad':
+    case 'my-activity':
       return { page: 'my-activity' }
-    case 'seguridad':
+    case 'security':
       return { page: 'my-security' }
-    case 'ajustes':
+    case 'my-settings':
       return { page: 'my-settings' }
-    case 'ayuda':
+    case 'help':
       return { page: 'help' }
     default:
       return { page: 'databases' }
@@ -67,17 +67,17 @@ export function parse(path: string): Route {
 
 export function href(route: Route): string {
   if (route.page === 'database') {
-    return `/databases/${encodeURIComponent(route.slug)}${route.tab === 'resumen' ? '' : `/${route.tab}`}`
+    return `/databases/${encodeURIComponent(route.slug)}${route.tab === 'overview' ? '' : `/${route.tab}`}`
   }
   if (route.page === 'my-database') {
-    return `/mis-bases/${encodeURIComponent(route.slug)}${route.tab === 'resumen' ? '' : `/${route.tab}`}`
+    return `/my-databases/${encodeURIComponent(route.slug)}${route.tab === 'overview' ? '' : `/${route.tab}`}`
   }
-  if (route.page === 'my-databases') return '/mis-bases'
-  if (route.page === 'my-backups') return '/mis-respaldos'
-  if (route.page === 'my-activity') return '/mi-actividad'
-  if (route.page === 'my-security') return '/seguridad'
-  if (route.page === 'my-settings') return '/ajustes'
-  if (route.page === 'help') return '/ayuda'
+  if (route.page === 'my-databases') return '/my-databases'
+  if (route.page === 'my-backups') return '/my-backups'
+  if (route.page === 'my-activity') return '/my-activity'
+  if (route.page === 'my-security') return '/security'
+  if (route.page === 'my-settings') return '/my-settings'
+  if (route.page === 'help') return '/help'
   return `/${route.page}`
 }
 
