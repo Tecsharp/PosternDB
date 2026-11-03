@@ -92,7 +92,7 @@ export function Backups({ session, settings }: PageProps) {
                     <td className="border-b border-line px-5 py-3 font-mono text-[0.9rem] max-md:border-0 max-md:p-0">{b.file}</td>
                     <td className="border-b border-line px-5 py-3 max-md:border-0 max-md:p-0">
                       {b.slug ? (
-                        <a className="hover:underline" href={href({ page: 'database', slug: b.slug, tab: 'respaldos' })} onClick={linkHandler(href({ page: 'database', slug: b.slug, tab: 'respaldos' }))}>
+                        <a className="hover:underline" href={href({ page: 'database', slug: b.slug, tab: 'backups' })} onClick={linkHandler(href({ page: 'database', slug: b.slug, tab: 'backups' }))}>
                           {b.slug}
                         </a>
                       ) : (

@@ -71,7 +71,7 @@ export function MyDatabases() {
 }
 
 function Row({ db }: { db: Database }) {
-  const to = href({ page: 'my-database', slug: db.slug, tab: 'resumen' })
+  const to = href({ page: 'my-database', slug: db.slug, tab: 'overview' })
   return (
     <li
       className="flex cursor-pointer flex-wrap items-center justify-between gap-3 px-5 py-3.5 hover:bg-surface-2"

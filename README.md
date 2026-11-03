@@ -74,6 +74,7 @@ Otras opciones útiles del `.env`:
 | Variable | Para qué sirve | Por defecto |
 |---|---|---|
 | `DB_EXPIRATION_DAYS` | Días sin uso antes de que una base expire | 30 |
+| `LANDING_URL` | Tu página con la política de privacidad (`/privacy`) y las condiciones (`/terms`); el acceso al panel enlaza ahí | vacío (sin enlaces) |
 | `ALLOW_SELF_REGISTER` | `true` deja que cualquiera cree su cuenta | true |
 | `AUTH_MODE` | Cómo entran los usuarios: `password`, `google` o `both` | `password` (o `both` si llenas Google) |
 | `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` | Activan "Continuar con Google" (ver abajo) | vacío (desactivado) |
@@ -106,7 +107,7 @@ Tu panel tiene **Mis bases de datos**, **Respaldos**, **Actividad**, **Seguridad
 
 ### Conectar tu aplicación
 
-Tu base vive en internet detrás de Cloudflare. Para usarla desde tu computadora necesitas **cloudflared**, un programa gratuito que abre un puente seguro. El panel tiene un botón **Ver tutorial** al crear la base, y la misma guía vive en `/ayuda` de tu panel. Aquí va resumida.
+Tu base vive en internet detrás de Cloudflare. Para usarla desde tu computadora necesitas **cloudflared**, un programa gratuito que abre un puente seguro. El panel tiene un botón **Ver tutorial** al crear la base, y la misma guía vive en `/help` de tu panel. Aquí va resumida.
 
 **1. Instala cloudflared** ([todas las descargas](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)):
 

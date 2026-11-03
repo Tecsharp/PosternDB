@@ -46,6 +46,8 @@ export interface PublicConfig {
   googleEnabled: boolean
   /** false when AUTH_MODE=google: registered users have no password login. */
   passwordEnabled: boolean
+  /** Public site with the privacy policy and the terms; empty = no links. */
+  landingUrl: string
 }
 
 export interface Database {

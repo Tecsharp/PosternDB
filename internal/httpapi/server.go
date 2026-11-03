@@ -138,6 +138,7 @@ type Settings struct {
 	AllowSelfRegister     bool   `json:"allowSelfRegister"`
 	MaxDatabasesPerClient int    `json:"maxDatabasesPerClient"`
 	AuthMode              string `json:"authMode"`
+	LandingURL            string `json:"-"`
 }
 
 // Deps groups everything the server needs.
@@ -328,10 +329,11 @@ func (s *server) settings(w http.ResponseWriter, r *http.Request) {
 // publicConfig is the only unauthenticated config: the login screen needs to
 // know whether to offer "Crear cuenta".
 func (s *server) publicConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"allowSelfRegister": s.Settings.AllowSelfRegister,
 		"googleEnabled":     s.Google != nil,
 		"passwordEnabled":   s.Settings.AuthMode != config.AuthModeGoogle,
+		"landingUrl":        s.Settings.LandingURL,
 	})
 }
 

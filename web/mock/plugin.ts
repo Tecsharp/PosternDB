@@ -209,7 +209,7 @@ export function mockApi(): Plugin {
           }
           return send(res, 401, { error: 'usuario o contraseña incorrectos' })
         }
-        if (path === '/auth/config') return send(res, 200, { allowSelfRegister: settings.allowSelfRegister, googleEnabled: true, passwordEnabled: true })
+        if (path === '/auth/config') return send(res, 200, { allowSelfRegister: settings.allowSelfRegister, googleEnabled: true, passwordEnabled: true, landingUrl: 'https://posterndb.com' })
         if (path === '/auth/google/start') {
           // Stand-in for Google: signs in a Google-only account and goes back to the panel.
           let g = clients.find((c) => c.email === 'laura@gmail.com')
@@ -338,7 +338,7 @@ export function mockApi(): Plugin {
           const c = clients.find((x) => x.id === currentClientId)
           if (c) c.googleLinked = true
           res.statusCode = 302
-          res.setHeader('Location', '/seguridad?google=linked')
+          res.setHeader('Location', '/security?google=linked')
           return res.end()
         }
         if (path === '/me/activity') return send(res, 200, { entries: myActivity })

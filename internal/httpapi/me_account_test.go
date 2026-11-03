@@ -75,7 +75,7 @@ func TestLinkingGoogleFromSecurity(t *testing.T) {
 	require.NotNil(t, oauthCk)
 
 	out := get(t, e, "/api/auth/google/callback?code=abc&state="+url.QueryEscape(loc.Query().Get("state")), oauthCk)
-	assert.Equal(t, "/seguridad?google=linked", out.Header().Get("Location"))
+	assert.Equal(t, "/security?google=linked", out.Header().Get("Location"))
 
 	body := decode[map[string]any](t, send(t, e, http.MethodGet, "/api/auth/session", "", session))
 	assert.Equal(t, true, body["googleLinked"])
@@ -133,8 +133,8 @@ func TestLinkingAGoogleAccountAlreadyUsedByAnotherUser(t *testing.T) {
 		require.NotNil(t, ck)
 		return get(t, e, "/api/auth/google/callback?code=abc&state="+url.QueryEscape(strings.Split(ck.Value, ".")[0]), ck)
 	}
-	assert.Equal(t, "/seguridad?google=linked", link(first).Header().Get("Location"))
-	assert.Equal(t, "/seguridad?google=taken", link(second).Header().Get("Location"))
+	assert.Equal(t, "/security?google=linked", link(first).Header().Get("Location"))
+	assert.Equal(t, "/security?google=taken", link(second).Header().Get("Location"))
 }
 
 // ---- account ---------------------------------------------------------------------
@@ -218,9 +218,9 @@ func TestAuthModeGoogleOnlyBlocksClientPasswords(t *testing.T) {
 	newcomer := oauth.Profile{Subject: "g-new", Email: "nueva@example.com", Name: "Nueva Persona", EmailVerified: true}
 	e := newEnvFull(t, nil, &fakeGoogle{profile: newcomer}, config.AuthModeGoogle)
 	e.addClient(t, "ana")
-	cfg := decode[map[string]bool](t, get(t, e, "/api/auth/config"))
-	assert.False(t, cfg["passwordEnabled"])
-	assert.True(t, cfg["googleEnabled"])
+	cfg := decode[map[string]any](t, get(t, e, "/api/auth/config"))
+	assert.Equal(t, false, cfg["passwordEnabled"])
+	assert.Equal(t, true, cfg["googleEnabled"])
 
 	assert.Equal(t, http.StatusBadRequest, e.do(t, http.MethodPost, "/api/auth/register", req{body: registerBody("x@example.com", "Equis Uno")}).Code, "no password sign-up")
 	assert.Equal(t, http.StatusUnauthorized, e.do(t, http.MethodPost, "/api/auth/login",
@@ -234,9 +234,9 @@ func TestAuthModeGoogleOnlyBlocksClientPasswords(t *testing.T) {
 
 func TestAuthModePasswordHasNoGoogle(t *testing.T) {
 	e := newEnvFull(t, nil, nil, config.AuthModePassword)
-	cfg := decode[map[string]bool](t, get(t, e, "/api/auth/config"))
-	assert.True(t, cfg["passwordEnabled"])
-	assert.False(t, cfg["googleEnabled"])
+	cfg := decode[map[string]any](t, get(t, e, "/api/auth/config"))
+	assert.Equal(t, true, cfg["passwordEnabled"])
+	assert.Equal(t, false, cfg["googleEnabled"])
 	assert.Equal(t, http.StatusNotFound, get(t, e, "/api/auth/google/start").Code)
 	e.signUp(t, "ana@example.com", "Ana López", "203.0.113.1")
 }
@@ -443,4 +443,12 @@ func TestRestoringABackupAlsoUsesTheCode(t *testing.T) {
 	rec := send(t, e, http.MethodPost, "/api/me/backups/"+itoa(id)+"/restore", `{"name":"copia"}`, ana)
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 	assert.Equal(t, e.slugOf(t, "ana@example.com", "copia"), strings.TrimPrefix(strings.TrimSuffix(decode[model.Credentials](t, rec).Hostname, ".pachislab.com"), "postern-"))
+}
+
+func TestPublicConfigTellsTheLoginWhereThePolicyLives(t *testing.T) {
+	none := newEnv(t, nil)
+	assert.Equal(t, "", decode[map[string]any](t, get(t, none, "/api/auth/config"))["landingUrl"], "no link until LANDING_URL is set")
+
+	e := newEnvFull(t, nil, nil, config.AuthModePassword, func(s *Settings) { s.LandingURL = "https://posterndb.com" })
+	assert.Equal(t, "https://posterndb.com", decode[map[string]any](t, get(t, e, "/api/auth/config"))["landingUrl"])
 }

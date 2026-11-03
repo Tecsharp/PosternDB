@@ -213,7 +213,7 @@ func (s *server) googleFailure(err error) string {
 // Seguridad page for linking.
 func redirectOAuth(w http.ResponseWriter, r *http.Request, mode, reason string) {
 	if mode == modeLink {
-		http.Redirect(w, r, "/seguridad?google="+reason, http.StatusFound)
+		http.Redirect(w, r, "/security?google="+reason, http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, "/?oauth="+reason, http.StatusFound)

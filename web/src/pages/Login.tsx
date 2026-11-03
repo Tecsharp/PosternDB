@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { api, type PublicConfig, type Session } from '../api'
 import { Logo } from '../components/Shell'
 import { Button, ErrorNote, errorMessage, PasswordInput } from '../components/ui'
@@ -27,6 +27,14 @@ function GoogleMark() {
   )
 }
 
+function LegalLink({ to, children }: { to: string; children: ReactNode }) {
+  return (
+    <a href={to} target="_blank" rel="noopener noreferrer" className="underline decoration-ink-3/40 underline-offset-2 hover:text-ink">
+      {children}
+    </a>
+  )
+}
+
 /** Google redirects back to "/?oauth=<reason>" when something went wrong. */
 function takeOAuthError(): string {
   const params = new URLSearchParams(window.location.search)
@@ -47,7 +55,7 @@ export function Login({ onLoggedIn }: { onLoggedIn: (s: Session) => void }) {
   const [adminForm, setAdminForm] = useState(false)
   const [error, setError] = useState(takeOAuthError)
   const [busy, setBusy] = useState(false)
-  const [config, setConfig] = useState<PublicConfig>({ allowSelfRegister: true, googleEnabled: false, passwordEnabled: true })
+  const [config, setConfig] = useState<PublicConfig>({ allowSelfRegister: true, googleEnabled: false, passwordEnabled: true, landingUrl: '' })
   const isRegister = mode === 'register'
 
   useEffect(() => {
@@ -179,6 +187,12 @@ export function Login({ onLoggedIn }: { onLoggedIn: (s: Session) => void }) {
             </div>
           )}
 
+          {isRegister && config.landingUrl && (
+            <p className="mt-4 text-[0.82rem] text-ink-3">
+              Al crear tu cuenta aceptas las <LegalLink to={`${config.landingUrl}/terms`}>Condiciones del servicio</LegalLink> y la <LegalLink to={`${config.landingUrl}/privacy`}>Política de privacidad</LegalLink>.
+            </p>
+          )}
+
           {showForm && (
             <Button type="submit" variant="primary" className="mt-6 w-full" disabled={busy}>
               {busy ? (isRegister ? 'Creando cuenta…' : 'Entrando…') : isRegister ? 'Crear cuenta' : 'Entrar'}
@@ -206,6 +220,13 @@ export function Login({ onLoggedIn }: { onLoggedIn: (s: Session) => void }) {
             </button>
           )}
         </form>
+        {config.landingUrl && (
+          <p className="mt-5 text-center text-[0.82rem] text-ink-3">
+            <LegalLink to={`${config.landingUrl}/privacy`}>Política de privacidad</LegalLink>
+            <span aria-hidden="true"> · </span>
+            <LegalLink to={`${config.landingUrl}/terms`}>Condiciones del servicio</LegalLink>
+          </p>
+        )}
       </div>
     </main>
   )

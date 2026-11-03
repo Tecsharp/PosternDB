@@ -9,11 +9,11 @@ import { href, linkHandler, navigate, type MyDatabaseTab } from '../../router'
 import { SchemaExplorer } from '../db/SchemaTab'
 
 const tabs: { id: MyDatabaseTab; label: string }[] = [
-  { id: 'resumen', label: 'Resumen' },
-  { id: 'datos', label: 'Datos' },
-  { id: 'esquema', label: 'Esquema' },
-  { id: 'conexion', label: 'Conexión' },
-  { id: 'ajustes', label: 'Ajustes' },
+  { id: 'overview', label: 'Resumen' },
+  { id: 'data', label: 'Datos' },
+  { id: 'schema', label: 'Esquema' },
+  { id: 'connection', label: 'Conexión' },
+  { id: 'settings', label: 'Ajustes' },
 ]
 
 export function MyDatabaseDetail({ slug, tab }: { slug: string; tab: MyDatabaseTab }) {
@@ -30,7 +30,7 @@ export function MyDatabaseDetail({ slug, tab }: { slug: string; tab: MyDatabaseT
     )
   }
 
-  const current = tabs.some((t) => t.id === tab) ? tab : 'resumen'
+  const current = tabs.some((t) => t.id === tab) ? tab : 'overview'
 
   return (
     <>
@@ -61,11 +61,11 @@ export function MyDatabaseDetail({ slug, tab }: { slug: string; tab: MyDatabaseT
           </ul>
         </nav>
 
-        {current === 'resumen' && <ResumenTab db={db} />}
-        {current === 'datos' && <DatosTab slug={db.slug} />}
-        {current === 'esquema' && <SchemaExplorer slug={db.slug} source={{ load: () => me.schema(db.slug), count: (schema, table) => me.count(db.slug, schema, table) }} />}
-        {current === 'conexion' && <ConexionTab slug={db.slug} />}
-        {current === 'ajustes' && <AjustesTab db={db} onChanged={reload} />}
+        {current === 'overview' && <ResumenTab db={db} />}
+        {current === 'data' && <DatosTab slug={db.slug} />}
+        {current === 'schema' && <SchemaExplorer slug={db.slug} source={{ load: () => me.schema(db.slug), count: (schema, table) => me.count(db.slug, schema, table) }} />}
+        {current === 'connection' && <ConexionTab slug={db.slug} />}
+        {current === 'settings' && <AjustesTab db={db} onChanged={reload} />}
       </PageBody>
     </>
   )
@@ -121,7 +121,7 @@ function ConexionTab({ slug }: { slug: string }) {
       <p className={`px-5 text-[0.85rem] text-ink-2 ${info.localMode ? 'pb-4' : 'pb-2'}`}>La contraseña no se guarda: genera una nueva en Ajustes si la perdiste.</p>
       {!info.localMode && (
         <p className="px-5 pb-4 text-[0.9rem]">
-          <a className="text-accent-text hover:underline" href={`/ayuda?host=${encodeURIComponent(info.hostname)}`} target="_blank" rel="noopener noreferrer">
+          <a className="text-accent-text hover:underline" href={`/help?host=${encodeURIComponent(info.hostname)}`} target="_blank" rel="noopener noreferrer">
             Ver tutorial: cómo abrir el puente con cloudflared
           </a>
         </p>

@@ -63,7 +63,7 @@ func newEnvWith(t *testing.T, health error, google GoogleAuth) env {
 
 // newEnvFull also picks AUTH_MODE: in google mode registered users have no
 // password login at all.
-func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string) env {
+func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string, tweaks ...func(*Settings)) env {
 	t.Helper()
 	e := env{
 		meta:     testsupport.NewFakeMetadata(),
@@ -89,6 +89,10 @@ func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string) env 
 		BackupDir:          e.backups,
 		Logger:             logger,
 	})
+	settings := Settings{BaseDomain: "pachislab.com", ClientHostPrefix: "postern-", ExampleHostname: "postern-cliente1.pachislab.com", ExpirationDays: 30, AllowSelfRegister: true, MaxDatabasesPerClient: 3, AuthMode: mode}
+	for _, tweak := range tweaks {
+		tweak(&settings)
+	}
 	e.handler = NewRouter(Deps{
 		Auth:      e.auth,
 		Limiter:   auth.NewRateLimiter(config.LoginRatePerMinute, config.LoginRateBurst),
@@ -99,7 +103,7 @@ func newEnvFull(t *testing.T, health error, google GoogleAuth, mode string) env 
 		Audit:     e.meta,
 		Health:    pinger{err: health},
 		Notifier:  e.notifier,
-		Settings:  Settings{BaseDomain: "pachislab.com", ClientHostPrefix: "postern-", ExampleHostname: "postern-cliente1.pachislab.com", ExpirationDays: 30, AllowSelfRegister: true, MaxDatabasesPerClient: 3, AuthMode: mode},
+		Settings:  settings,
 		Static: fstest.MapFS{
 			"index.html":        {Data: []byte("<html>panel</html>")},
 			"assets/app-abc.js": {Data: []byte("console.log(1)")},

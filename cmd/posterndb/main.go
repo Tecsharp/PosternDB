@@ -277,6 +277,7 @@ func settingsFrom(cfg *config.Config) httpapi.Settings {
 		AllowSelfRegister:     cfg.AllowSelfRegister,
 		MaxDatabasesPerClient: cfg.MaxDatabasesPerUser,
 		AuthMode:              cfg.AuthMode,
+		LandingURL:            cfg.LandingURL,
 	}
 }
 

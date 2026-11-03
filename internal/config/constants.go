@@ -35,6 +35,7 @@ const (
 	EnvBackupDir             = "BACKUP_DIR"
 	EnvAllowSelfRegister     = "ALLOW_SELF_REGISTER"
 	EnvAuthMode              = "AUTH_MODE"
+	EnvLandingURL            = "LANDING_URL"
 	EnvGoogleClientID        = "GOOGLE_CLIENT_ID"
 	EnvGoogleClientSecret    = "GOOGLE_CLIENT_SECRET"
 	EnvGoogleRedirectURL     = "GOOGLE_REDIRECT_URL"

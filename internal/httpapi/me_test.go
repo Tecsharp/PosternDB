@@ -38,7 +38,7 @@ func TestPublicConfigIsAnonymous(t *testing.T) {
 	e := newEnv(t, nil)
 	rec := e.do(t, http.MethodGet, "/api/auth/config", req{})
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.True(t, decode[map[string]bool](t, rec)["allowSelfRegister"])
+	assert.Equal(t, true, decode[map[string]any](t, rec)["allowSelfRegister"])
 }
 
 func TestLiveConnectionsForAdmins(t *testing.T) {

@@ -85,7 +85,7 @@ export function MySettings() {
         <Panel title="Ayuda">
           <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
             <p className="text-[0.95rem] text-ink-2">Aprende a instalar cloudflared y abrir el puente para conectar tu aplicación.</p>
-            <ButtonLink href="/ayuda" target="_blank" rel="noopener noreferrer">
+            <ButtonLink href="/help" target="_blank" rel="noopener noreferrer">
               Ver tutorial
             </ButtonLink>
           </div>

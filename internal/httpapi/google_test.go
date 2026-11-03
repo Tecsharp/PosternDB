@@ -76,10 +76,10 @@ func TestGoogleIsOffUnlessConfigured(t *testing.T) {
 	e := newEnv(t, nil)
 	assert.Equal(t, http.StatusNotFound, get(t, e, "/api/auth/google/start").Code)
 	assert.Equal(t, http.StatusNotFound, get(t, e, "/api/auth/google/callback?code=x&state=y").Code)
-	assert.False(t, decode[map[string]bool](t, get(t, e, "/api/auth/config"))["googleEnabled"])
+	assert.Equal(t, false, decode[map[string]any](t, get(t, e, "/api/auth/config"))["googleEnabled"])
 
 	on := newEnvWith(t, nil, &fakeGoogle{})
-	assert.True(t, decode[map[string]bool](t, get(t, on, "/api/auth/config"))["googleEnabled"])
+	assert.Equal(t, true, decode[map[string]any](t, get(t, on, "/api/auth/config"))["googleEnabled"])
 }
 
 func TestGoogleCookieIsHardened(t *testing.T) {
