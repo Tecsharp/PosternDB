@@ -25,6 +25,20 @@ func NewPolicy(cfg *config.Config) Policy {
 	return Policy{MaxIdle: cfg.DBExpiration, WarnBefore: cfg.ExpiringSoon}
 }
 
+// WithOverride applies the operator's runtime override (from the owner-only
+// Ajustes -> Expiración panel) on top of the .env defaults. A nil field in
+// override leaves the corresponding default untouched.
+func (p Policy) WithOverride(override model.PlatformSettings) Policy {
+	out := p
+	if override.ExpirationDays != nil {
+		out.MaxIdle = time.Duration(*override.ExpirationDays) * day
+	}
+	if override.ExpiringSoonDays != nil {
+		out.WarnBefore = time.Duration(*override.ExpiringSoonDays) * day
+	}
+	return out
+}
+
 // MaxIdleFor returns the idle limit of one database: its own max_idle_days
 // when set, otherwise the global DB_EXPIRATION_DAYS.
 func (p Policy) MaxIdleFor(db model.ClientDatabase) time.Duration {
@@ -58,6 +72,33 @@ func (p Policy) IsExpired(db model.ClientDatabase, now time.Time) bool {
 func (p Policy) InWarningWindow(db model.ClientDatabase, now time.Time) bool {
 	at, ok := p.ExpiresAt(db)
 	return ok && !now.After(at) && at.Sub(now) <= p.WarnBefore
+}
+
+// ApplyClientOverride resolves a database's effective exception before
+// Policy.Status/ExpiresAt/IsExpired run on it:
+//
+//  1. The database's own exception (never_expires / max_idle_days), if set,
+//     always wins — it is the most specific and most recently chosen.
+//  2. Otherwise, its owning client's exception, if the owner set one
+//     ("usuario3 nunca expira en todas sus bases de datos").
+//  3. Otherwise the database is returned unchanged, so Policy falls back to
+//     the global default (platform_settings, then .env). Databases with no
+//     client_user_id (created through the admin panel) always land here.
+//
+// users is keyed by client_users.id; callers fetch it once per batch (List,
+// the auditor's run) rather than per database.
+func ApplyClientOverride(db model.ClientDatabase, users map[int64]model.ClientUser) model.ClientDatabase {
+	if db.NeverExpires || db.MaxIdleDays != nil {
+		return db
+	}
+	if db.ClientUserID == nil {
+		return db
+	}
+	if u, ok := users[*db.ClientUserID]; ok {
+		db.NeverExpires = u.NeverExpires
+		db.MaxIdleDays = u.MaxIdleDays
+	}
+	return db
 }
 
 // Status returns the label shown in the panel. Expired is final; active

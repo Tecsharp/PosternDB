@@ -32,7 +32,7 @@ type Router interface {
 
 // ErrForeignRecord means a DNS record with the hostname exists but does not
 // point at our tunnel. We refuse to overwrite records we did not create.
-var ErrForeignRecord = errors.New("a DNS record for this hostname already exists and points elsewhere")
+var ErrForeignRecord = errors.New("ya existe un registro DNS con ese nombre que apunta a otro lado: bórralo en Cloudflare (DNS > Registros) o usa otro PANEL_HOSTNAME / prefijo")
 
 // Client implements Router with the official cloudflare-go SDK.
 type Client struct {

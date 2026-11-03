@@ -465,3 +465,134 @@ func TestNewDefaults(t *testing.T) {
 	assert.Equal(t, assert.AnError.Error(), e.Error())
 	assert.ErrorIs(t, e, assert.AnError)
 }
+
+func TestEffectivePolicyAndGlobalSettings(t *testing.T) {
+	h := newHarness(true, testsupport.FakeSecrets{})
+	ctx := context.Background()
+
+	// No override yet: effective policy is the .env default.
+	assert.Equal(t, h.svc.opts.Policy, h.svc.EffectivePolicy(ctx))
+	raw, err := h.svc.GlobalSettings(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, raw.ExpirationDays)
+
+	days, warn := 90, 14
+	saved, err := h.svc.SetGlobalSettings(ctx, &days, &warn, "root")
+	require.NoError(t, err)
+	assert.Equal(t, 90, *saved.ExpirationDays)
+	assert.Equal(t, "root", saved.UpdatedBy)
+	assert.Contains(t, h.meta.Actions(), config.ActionGlobalExpiryChanged)
+
+	assert.Equal(t, expiry.Policy{MaxIdle: 90 * day, WarnBefore: 14 * day}, h.svc.EffectivePolicy(ctx))
+
+	// List/Get now resolve expiry against the override, not the .env default.
+	h.seedActive("acme", fixedNow.Add(-91*day))
+	views, err := h.svc.List(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, config.StatusExpired, views[0].Status, "91 days idle against a 90-day override")
+
+	// Validation.
+	_, err = h.svc.SetGlobalSettings(ctx, ptr(0), nil, "root")
+	var invalidErr *InvalidInputError
+	assert.ErrorAs(t, err, &invalidErr)
+	_, err = h.svc.SetGlobalSettings(ctx, ptr(5), ptr(10), "root")
+	assert.ErrorAs(t, err, &invalidErr, "warn days must stay below expiration days")
+
+	// A read failure falls back to the .env default instead of failing List/Get.
+	h.meta.FailList = true
+	assert.Equal(t, h.svc.opts.Policy, h.svc.EffectivePolicy(ctx))
+	_, err = h.svc.GlobalSettings(ctx)
+	assert.Error(t, err)
+}
+
+func TestCreateViaAdminPanelHasNoClientUser(t *testing.T) {
+	h := newHarness(true, testsupport.FakeSecrets{})
+	h.create(t, CreateRequest{Name: "acme"})
+	row, err := h.meta.GetDatabase(context.Background(), "acme")
+	require.NoError(t, err)
+	assert.Nil(t, row.ClientUserID, "a database created through the admin panel belongs to no client")
+}
+
+func TestCreateForClientRecordsClientUserID(t *testing.T) {
+	h := newHarness(true, testsupport.FakeSecrets{})
+	ana, err := h.meta.CreateClientUser(context.Background(), model.NewClientUser{Username: "ana", PasswordHash: "hash"})
+	require.NoError(t, err)
+	_, err = h.svc.Create(context.Background(), CreateRequest{Name: "ana-app", ClientUserID: &ana.ID}, "ana")
+	require.NoError(t, err)
+	row, err := h.meta.GetDatabase(context.Background(), "ana-app")
+	require.NoError(t, err)
+	require.NotNil(t, row.ClientUserID)
+	assert.Equal(t, ana.ID, *row.ClientUserID)
+}
+
+func TestClientExpiryPrecedence(t *testing.T) {
+	h := newHarness(true, testsupport.FakeSecrets{})
+	ctx := context.Background()
+
+	// ana never expires; her databases should all be unlimited unless one
+	// has its own exception.
+	ana, err := h.meta.CreateClientUser(ctx, model.NewClientUser{Username: "ana", PasswordHash: "hash"})
+	require.NoError(t, err)
+	_, err = h.svc.SetClientExpiry(ctx, ana.ID, true, nil, "root")
+	require.NoError(t, err)
+
+	anaDB := h.seedActive("ana-app", fixedNow.Add(-400*day))
+	h.meta.Rows[anaDB.ID].ClientUserID = &ana.ID
+
+	ownDays := 5
+	anaOverride := h.seedActive("ana-strict", fixedNow.Add(-10*day))
+	h.meta.Rows[anaOverride.ID].ClientUserID = &ana.ID
+	h.meta.Rows[anaOverride.ID].MaxIdleDays = &ownDays
+
+	noOwner := h.seedActive("nobody", fixedNow.Add(-400*day))
+	_ = noOwner
+
+	views, err := h.svc.List(ctx)
+	require.NoError(t, err)
+	status := map[string]string{}
+	for _, v := range views {
+		status[v.Slug] = v.Status
+	}
+	assert.Equal(t, config.StatusActive, status["ana-app"], "inherits ana's never-expires exception")
+	assert.Equal(t, config.StatusExpired, status["ana-strict"], "its own 5-day exception wins over ana's never-expires (10 days idle)")
+	assert.Equal(t, config.StatusExpired, status["nobody"], "no client exception: falls back to the 30-day global default")
+
+	// A database's own exception beats the client's.
+	short := 3
+	_, err = h.svc.SetExpiry(ctx, "ana-strict", ExpiryRequest{MaxIdleDays: &short}, "admin")
+	require.NoError(t, err)
+	views, err = h.svc.List(ctx)
+	require.NoError(t, err)
+	for _, v := range views {
+		if v.Slug == "ana-strict" {
+			assert.Equal(t, config.StatusExpired, v.Status, "own 3-day exception wins over ana's never-expires")
+		}
+	}
+}
+
+func TestSetClientExpiryValidationAndAudit(t *testing.T) {
+	h := newHarness(true, testsupport.FakeSecrets{})
+	ctx := context.Background()
+	ana, err := h.meta.CreateClientUser(ctx, model.NewClientUser{Username: "ana", PasswordHash: "hash"})
+	require.NoError(t, err)
+
+	var invalidErr *InvalidInputError
+	_, err = h.svc.SetClientExpiry(ctx, ana.ID, false, ptr(0), "root")
+	assert.ErrorAs(t, err, &invalidErr)
+
+	saved, err := h.svc.SetClientExpiry(ctx, ana.ID, false, ptr(45), "root")
+	require.NoError(t, err)
+	assert.Equal(t, 45, *saved.MaxIdleDays)
+	assert.Contains(t, h.meta.Actions(), config.ActionClientExpiryChanged)
+
+	list, err := h.svc.ListClients(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "ana", list[0].Username)
+
+	_, err = h.svc.SetClientExpiry(ctx, 9999, false, nil, "root")
+	assert.ErrorIs(t, err, model.ErrNotFound)
+
+	h.meta.FailList = true
+	assert.Empty(t, h.svc.clientOverrides(ctx), "a read failure yields an empty map instead of failing the request")
+}

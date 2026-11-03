@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/tecsharp/posterndb/internal/config"
 	"github.com/tecsharp/posterndb/internal/model"
@@ -87,4 +88,50 @@ func TestInWarningWindowExcludesExpired(t *testing.T) {
 func TestNewPolicy(t *testing.T) {
 	p := NewPolicy(&config.Config{DBExpiration: 5 * day, ExpiringSoon: day})
 	assert.Equal(t, Policy{MaxIdle: 5 * day, WarnBefore: day}, p)
+}
+
+func TestWithOverride(t *testing.T) {
+	base := Policy{MaxIdle: 30 * day, WarnBefore: 7 * day}
+
+	same := base.WithOverride(model.PlatformSettings{})
+	assert.Equal(t, base, same, "nil fields leave the .env defaults untouched")
+
+	days, warn := 60, 5
+	only := base.WithOverride(model.PlatformSettings{ExpirationDays: &days})
+	assert.Equal(t, Policy{MaxIdle: 60 * day, WarnBefore: 7 * day}, only, "only the given field changes")
+
+	both := base.WithOverride(model.PlatformSettings{ExpirationDays: &days, ExpiringSoonDays: &warn})
+	assert.Equal(t, Policy{MaxIdle: 60 * day, WarnBefore: 5 * day}, both)
+}
+
+func TestApplyClientOverride(t *testing.T) {
+	ana90 := 90
+	ptrID := func(n int64) *int64 { return &n }
+	users := map[int64]model.ClientUser{
+		1: {ID: 1, Username: "ana", NeverExpires: true},
+		2: {ID: 2, Username: "bi", MaxIdleDays: &ana90},
+	}
+
+	// The database's own exception always wins.
+	own := 15
+	db := model.ClientDatabase{ClientUserID: ptrID(1), MaxIdleDays: &own}
+	assert.Equal(t, db, ApplyClientOverride(db, users), "per-database exception is never overwritten")
+
+	neverDB := model.ClientDatabase{ClientUserID: ptrID(2), NeverExpires: true}
+	assert.Equal(t, neverDB, ApplyClientOverride(neverDB, users))
+
+	// No per-database exception: falls back to the owning client's exception.
+	resolved := ApplyClientOverride(model.ClientDatabase{ClientUserID: ptrID(1)}, users)
+	assert.True(t, resolved.NeverExpires)
+
+	resolved = ApplyClientOverride(model.ClientDatabase{ClientUserID: ptrID(2)}, users)
+	assert.False(t, resolved.NeverExpires)
+	require.NotNil(t, resolved.MaxIdleDays)
+	assert.Equal(t, 90, *resolved.MaxIdleDays)
+
+	// No exception anywhere: untouched, Policy falls back to the global default.
+	none := model.ClientDatabase{ClientUserID: ptrID(99)}
+	assert.Equal(t, none, ApplyClientOverride(none, users))
+	assert.Equal(t, model.ClientDatabase{}, ApplyClientOverride(model.ClientDatabase{}, users), "no owning client, no change")
+	assert.Equal(t, none, ApplyClientOverride(none, nil), "nil users map is safe")
 }

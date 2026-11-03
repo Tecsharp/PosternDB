@@ -47,7 +47,35 @@ type Config struct {
 	LocalDBPort int
 	BackupDir   string
 	Notify      NotifyConfig
+	// AllowSelfRegister enables the public /auth/register endpoint and the
+	// "panel de usuario" sign-up link. false = only administrators create
+	// client accounts.
+	AllowSelfRegister   bool
+	MaxDatabasesPerUser int
+	// Google holds the OAuth client; whether it is used depends on AuthMode.
+	Google GoogleConfig
+	// AuthMode is how registered users sign in: password, google or both.
+	// Administrators always use their username and password.
+	AuthMode string
 }
+
+// GoogleActive reports whether "Continuar con Google" is offered.
+func (c *Config) GoogleActive() bool {
+	return c.AuthMode != AuthModePassword && c.Google.Enabled()
+}
+
+// ClientPasswordLogin reports whether registered users may use a password.
+func (c *Config) ClientPasswordLogin() bool { return c.AuthMode != AuthModeGoogle }
+
+// GoogleConfig holds the OAuth client created in Google Cloud Console.
+type GoogleConfig struct {
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string
+}
+
+// Enabled reports whether Google sign-in is configured.
+func (g GoogleConfig) Enabled() bool { return g.ClientID != "" && g.ClientSecret != "" }
 
 // NotifyConfig configures expiry warnings. Every channel is optional.
 type NotifyConfig struct {
@@ -140,13 +168,15 @@ func Load(getenv Getenv) (*Config, error) {
 			Host:     p.optional(EnvPostgresHost, DefaultPostgresHost),
 			Port:     p.positiveInt(EnvPostgresPort, DefaultPostgresPort),
 		},
-		HTTPAddr:           p.optional(EnvHTTPAddr, DefaultHTTPAddr),
-		TunnelDBService:    p.optional(EnvTunnelDBService, DefaultTunnelDBService),
-		TunnelPanelService: p.optional(EnvTunnelPanelService, DefaultTunnelPanelService),
-		ClientLocalPort:    p.positiveInt(EnvClientDBPort, DefaultClientLocalPort),
-		LocalMode:          local,
-		LocalDBPort:        p.positiveInt(EnvLocalDBPort, DefaultLocalDBPort),
-		BackupDir:          p.optional(EnvBackupDir, DefaultBackupDir),
+		HTTPAddr:            p.optional(EnvHTTPAddr, DefaultHTTPAddr),
+		TunnelDBService:     p.optional(EnvTunnelDBService, DefaultTunnelDBService),
+		TunnelPanelService:  p.optional(EnvTunnelPanelService, DefaultTunnelPanelService),
+		ClientLocalPort:     p.positiveInt(EnvClientDBPort, DefaultClientLocalPort),
+		LocalMode:           local,
+		LocalDBPort:         p.positiveInt(EnvLocalDBPort, DefaultLocalDBPort),
+		BackupDir:           p.optional(EnvBackupDir, DefaultBackupDir),
+		AllowSelfRegister:   p.boolean(EnvAllowSelfRegister, DefaultAllowSelfRegister),
+		MaxDatabasesPerUser: p.positiveInt(EnvMaxDatabasesPerClient, DefaultMaxDBsPerClient),
 		Notify: NotifyConfig{
 			WebhookURL:   p.value(EnvNotifyWebhookURL),
 			EmailTo:      splitList(p.value(EnvNotifyEmailTo)),
@@ -162,6 +192,17 @@ func Load(getenv Getenv) (*Config, error) {
 		defaultPanel = DefaultPanelSubdomain + "." + cfg.BaseDomain
 	}
 	cfg.PanelHostname = strings.ToLower(p.optional(EnvPanelHostname, defaultPanel))
+	cfg.Google = GoogleConfig{ClientID: p.value(EnvGoogleClientID), ClientSecret: p.value(EnvGoogleClientSecret), RedirectURL: p.value(EnvGoogleRedirectURL)}
+	if cfg.Google.Enabled() && cfg.Google.RedirectURL == "" {
+		cfg.Google.RedirectURL = defaultGoogleRedirect(local, cfg.PanelHostname, p.positiveInt(EnvPanelLocalPort, DefaultPanelLocalPort))
+	}
+	cfg.AuthMode = strings.ToLower(p.value(EnvAuthMode))
+	if cfg.AuthMode == "" {
+		cfg.AuthMode = AuthModePassword
+		if cfg.Google.Enabled() {
+			cfg.AuthMode = AuthModeBoth
+		}
+	}
 	if token := cloud(EnvCloudflareTunnelToken); token != "" {
 		cfg.Tunnel = p.tunnel(token)
 	}
@@ -243,7 +284,31 @@ func (p *parser) invalidf(format string, args ...any) {
 	p.invalid = append(p.invalid, fmt.Sprintf(format, args...))
 }
 
+// defaultGoogleRedirect is where Google sends people back: the public panel
+// address, or the loopback port in local mode.
+func defaultGoogleRedirect(local bool, panelHost string, localPort int) string {
+	if local {
+		return fmt.Sprintf("http://localhost:%d%s%s", localPort, RouteAPI, RouteGoogleCallback)
+	}
+	return "https://" + panelHost + RouteAPI + RouteGoogleCallback
+}
+
 func (p *parser) validate(cfg *Config) {
+	switch cfg.AuthMode {
+	case AuthModePassword:
+	case AuthModeGoogle, AuthModeBoth:
+		if !cfg.Google.Enabled() {
+			p.invalidf("%s=%s needs %s and %s; set them, or use %s=%s", EnvAuthMode, cfg.AuthMode, EnvGoogleClientID, EnvGoogleClientSecret, EnvAuthMode, AuthModePassword)
+		}
+	default:
+		p.invalidf("%s must be %s, %s or %s (got %q)", EnvAuthMode, AuthModePassword, AuthModeGoogle, AuthModeBoth, cfg.AuthMode)
+	}
+	if (cfg.Google.ClientID == "") != (cfg.Google.ClientSecret == "") {
+		p.invalidf("%s and %s must be set together (or both left empty to disable Google sign-in)", EnvGoogleClientID, EnvGoogleClientSecret)
+	}
+	if u := cfg.Google.RedirectURL; u != "" && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+		p.invalidf("%s must be an http(s) URL", EnvGoogleRedirectURL)
+	}
 	if cfg.Notify.WebhookURL != "" && !strings.HasPrefix(cfg.Notify.WebhookURL, "https://") && !strings.HasPrefix(cfg.Notify.WebhookURL, "http://") {
 		p.invalidf("%s must be an http(s) URL", EnvNotifyWebhookURL)
 	}

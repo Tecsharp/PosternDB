@@ -1,9 +1,13 @@
-import { api, type Database } from '../../api'
+import { useState } from 'react'
+import type { Database } from '../../api'
+import { api as client, can } from '../../api'
 import type { PageProps } from '../../App'
 import { PageBody, PageHeader } from '../../components/Shell'
-import { ErrorNote, Loading, segmentClass, StatusBadge, useLoad } from '../../components/ui'
-import { href, linkHandler, type DatabaseTab } from '../../router'
+import { Button, ErrorNote, Loading, segmentClass, StatusBadge, useAction, useLoad } from '../../components/ui'
+import { href, linkHandler, navigate, type DatabaseTab } from '../../router'
+import { ArchiveDownMinimalisticIcon, CodeSquareIcon, TableIcon } from '@solar-icons/react/linear'
 import { BackupsTab } from './BackupsTab'
+import { DataTab } from './DataTab'
 import { ConnectTab } from './ConnectTab'
 import { ConsoleTab } from './ConsoleTab'
 import { OverviewTab } from './OverviewTab'
@@ -13,6 +17,7 @@ import { UsersTab } from './UsersTab'
 
 const tabs: { id: DatabaseTab; label: string; needsActive: boolean }[] = [
   { id: 'resumen', label: 'Resumen', needsActive: false },
+  { id: 'datos', label: 'Datos', needsActive: true },
   { id: 'esquema', label: 'Esquema', needsActive: true },
   { id: 'consola', label: 'Consola SQL', needsActive: true },
   { id: 'conexion', label: 'Conexión', needsActive: true },
@@ -28,7 +33,9 @@ export interface TabProps extends PageProps {
 }
 
 export function DatabaseDetail({ slug, tab, ...props }: PageProps & { slug: string; tab: DatabaseTab }) {
-  const { data: db, error, loading, reload, setData } = useLoad(() => api.database(slug), [slug])
+  const { data: db, error, loading, reload, setData } = useLoad(() => client.database(slug), [slug])
+  const backup = useAction()
+  const [backupDone, setBackupDone] = useState(false)
 
   if (loading && !db) return <Loading label="Cargando base de datos…" />
   if (error || !db) {
@@ -57,8 +64,48 @@ export function DatabaseDetail({ slug, tab, ...props }: PageProps & { slug: stri
           </span>
         }
         subtitle={<span className="font-mono">{db.hostname || `${db.database} (modo local)`}</span>}
+        actions={
+          active &&
+          can.operate(props.session.role) && (
+            <>
+              <Button onClick={() => navigate(href({ page: 'database', slug: db.slug, tab: 'datos' }))}>
+                <TableIcon size={18} aria-hidden />
+                Ver datos
+              </Button>
+              <Button onClick={() => navigate(href({ page: 'database', slug: db.slug, tab: 'consola' }))}>
+                <CodeSquareIcon size={18} aria-hidden />
+                Consola SQL
+              </Button>
+              <Button
+                variant="primary"
+                disabled={backup.busy}
+                onClick={async () => {
+                  setBackupDone(false)
+                  const job = await backup.run(() => client.backup(db.slug))
+                  if (job) setBackupDone(true)
+                }}
+              >
+                <ArchiveDownMinimalisticIcon size={18} aria-hidden />
+                {backup.busy ? 'Encolando…' : 'Respaldar ahora'}
+              </Button>
+            </>
+          )
+        }
       />
       <PageBody>
+        {(backupDone || backup.error) && (
+          <p role="status" className={`text-[1rem] ${backup.error ? 'text-danger' : 'text-accent-text'}`}>
+            {backup.error || (
+              <>
+                Respaldo en cola. Lo verás en{' '}
+                <a className="underline" href={href({ page: 'database', slug: db.slug, tab: 'respaldos' })} onClick={linkHandler(href({ page: 'database', slug: db.slug, tab: 'respaldos' }))}>
+                  Respaldos
+                </a>{' '}
+                en unos segundos.
+              </>
+            )}
+          </p>
+        )}
         <nav aria-label="Secciones de la base de datos" className="overflow-x-auto">
           <ul className="inline-flex min-w-max rounded-[7px] bg-surface-2 p-0.5">
             {visible.map((t) => {
@@ -81,6 +128,7 @@ export function DatabaseDetail({ slug, tab, ...props }: PageProps & { slug: stri
         </nav>
 
         {current === 'resumen' && <OverviewTab {...tabProps} />}
+        {current === 'datos' && <DataTab {...tabProps} />}
         {current === 'esquema' && <SchemaTab {...tabProps} />}
         {current === 'consola' && <ConsoleTab {...tabProps} />}
         {current === 'conexion' && <ConnectTab {...tabProps} />}

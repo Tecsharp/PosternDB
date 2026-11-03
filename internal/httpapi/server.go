@@ -18,9 +18,11 @@ import (
 
 	"github.com/tecsharp/posterndb/internal/admins"
 	"github.com/tecsharp/posterndb/internal/auth"
+	"github.com/tecsharp/posterndb/internal/clients"
 	"github.com/tecsharp/posterndb/internal/config"
 	"github.com/tecsharp/posterndb/internal/model"
 	"github.com/tecsharp/posterndb/internal/notify"
+	"github.com/tecsharp/posterndb/internal/oauth"
 	"github.com/tecsharp/posterndb/internal/provision"
 )
 
@@ -34,11 +36,24 @@ type Databases interface {
 	ResetPassword(ctx context.Context, slug, actor string) (model.Credentials, error)
 	SetExpiry(ctx context.Context, slug string, req provision.ExpiryRequest, actor string) (provision.DatabaseView, error)
 	Extend(ctx context.Context, slug string, days int, actor string) (provision.DatabaseView, error)
+	GlobalSettings(ctx context.Context) (model.PlatformSettings, error)
+	SetGlobalSettings(ctx context.Context, days, warnDays *int, actor string) (model.PlatformSettings, error)
+	ListClients(ctx context.Context) ([]model.ClientUser, error)
+	SetClientExpiry(ctx context.Context, id int64, never bool, maxIdleDays *int, actor string) (model.ClientUser, error)
+	ClientDatabases(ctx context.Context, clientUserID int64) ([]provision.DatabaseView, error)
+	CountByClient(ctx context.Context, clientUserID int64) (int, error)
 	Stats(ctx context.Context, slug string) (model.DatabaseStats, error)
+	Connections(ctx context.Context, slug string) ([]model.Connection, error)
+	SharedTemplates(ctx context.Context) ([]model.Template, error)
+	ClientBackups(ctx context.Context, clientUserID int64) ([]model.Job, error)
 	Schema(ctx context.Context, slug string) (model.Schema, error)
 	Query(ctx context.Context, slug, sql, actor string) (model.QueryResult, error)
 	Preview(ctx context.Context, slug, schema, table string) (model.QueryResult, error)
 	CountRows(ctx context.Context, slug, schema, table string) (int64, error)
+	Browse(ctx context.Context, slug string, req provision.BrowseRequest) (model.TableData, error)
+	InsertRow(ctx context.Context, slug, schema, table string, values model.RowValues, actor string) error
+	UpdateRow(ctx context.Context, slug, schema, table string, key, values model.RowValues, actor string) error
+	DeleteRow(ctx context.Context, slug, schema, table string, key model.RowValues, actor string) error
 	ListUsers(ctx context.Context, slug string) ([]model.DatabaseUser, error)
 	CreateUser(ctx context.Context, slug, name, access, actor string) (model.Credentials, error)
 	ResetUserPassword(ctx context.Context, slug, name, actor string) (model.Credentials, error)
@@ -62,6 +77,29 @@ type Admins interface {
 	ResetPassword(ctx context.Context, username, actor string) (string, error)
 	ChangeOwnPassword(ctx context.Context, username, current, next string) error
 	Delete(ctx context.Context, username, actor string) error
+}
+
+// Clients manages self-service tenants (model.ClientUser): their account
+// lifecycle (register/create/delete/password). Listing and the owner's
+// expiry exception live on Databases (provision.Service), which already
+// enriches each client with its database count.
+type Clients interface {
+	Register(ctx context.Context, in clients.RegisterInput) (model.ClientUser, error)
+	Create(ctx context.Context, email, fullName, actor string) (model.ClientUser, string, error)
+	LoginWithGoogle(ctx context.Context, g oauth.Profile) (model.ClientUser, error)
+	LinkGoogle(ctx context.Context, id int64, g oauth.Profile) (model.ClientUser, error)
+	SetUsername(ctx context.Context, id int64, username string) (model.ClientUser, error)
+	SetFullName(ctx context.Context, id int64, fullName string) (model.ClientUser, error)
+	ByID(ctx context.Context, id int64) (model.ClientUser, bool, error)
+	ChangeOwnPassword(ctx context.Context, id int64, current, next string) error
+	ResetPassword(ctx context.Context, id int64, actor string) (string, error)
+	Delete(ctx context.Context, id int64, actor string) error
+}
+
+// GoogleAuth is the Google sign-in flow; nil in Deps disables it.
+type GoogleAuth interface {
+	AuthURL(state, nonce, verifier string) string
+	Exchange(ctx context.Context, code, verifier, nonce string) (oauth.Profile, error)
 }
 
 // AuditReader lists audit_log entries.
@@ -94,6 +132,12 @@ type Settings struct {
 	LocalDBPort        int      `json:"localDbPort"`
 	ClientLocalPort    int      `json:"clientLocalPort"`
 	NotifyChannels     []string `json:"notifyChannels"`
+	// AllowSelfRegister and MaxDatabasesPerClient tell the frontend whether
+	// to show the public sign-up link and how many databases a client may
+	// create before hitting their quota.
+	AllowSelfRegister     bool   `json:"allowSelfRegister"`
+	MaxDatabasesPerClient int    `json:"maxDatabasesPerClient"`
+	AuthMode              string `json:"authMode"`
 }
 
 // Deps groups everything the server needs.
@@ -102,6 +146,8 @@ type Deps struct {
 	Limiter   *auth.RateLimiter
 	Databases Databases
 	Admins    Admins
+	Clients   Clients
+	Google    GoogleAuth
 	Audit     AuditReader
 	Health    Pinger
 	Notifier  Notifier
@@ -125,12 +171,18 @@ func NewRouter(d Deps) http.Handler {
 	r.Route(config.RouteAPI, func(api chi.Router) {
 		api.Use(auth.RequireCSRFHeader)
 		api.With(d.Limiter.Middleware).Post(config.RouteLogin, s.login)
+		api.With(d.Limiter.Middleware).Post(config.RouteRegister, s.register)
+		api.Get(config.RoutePublicConfig, s.publicConfig)
+		api.With(d.Limiter.Middleware).Get(config.RouteGoogleStart, s.googleStart)
+		api.With(d.Limiter.Middleware).Get(config.RouteGoogleCallback, s.googleCallback)
 		api.Post(config.RouteLogout, s.logout)
 		api.Group(func(p chi.Router) {
 			p.Use(d.Auth.Middleware)
+			p.Get(config.RouteSession, s.session)
 			s.viewerRoutes(p.With(auth.RequireRole(config.RoleViewer)))
 			s.adminRoutes(p.With(auth.RequireRole(config.RoleAdmin)))
 			s.ownerRoutes(p.With(auth.RequireRole(config.RoleOwner)))
+			s.clientRoutes(p.With(auth.RequireClient))
 		})
 	})
 	r.NotFound(spaHandler(d.Static))
@@ -138,13 +190,13 @@ func NewRouter(d Deps) http.Handler {
 }
 
 func (s *server) viewerRoutes(r chi.Router) {
-	r.Get(config.RouteSession, s.session)
 	r.Post(config.RouteAuthPassword, s.changeOwnPassword)
 	r.Get(config.RouteSettings, s.settings)
 	r.Get(config.RouteDatabases, s.listDatabases)
 	r.Get(config.RouteDatabase, s.getDatabase)
 	r.Get(config.RouteConnection, s.connection)
 	r.Get(config.RouteStats, s.stats)
+	r.Get(config.RouteLiveConnections, s.liveConnections)
 	r.Get(config.RouteSchema, s.schema)
 	r.Get(config.RouteTableCount, s.countRows)
 	r.Get(config.RouteDBUsers, s.listUsers)
@@ -159,10 +211,12 @@ func (s *server) adminRoutes(r chi.Router) {
 	r.Post(config.RouteDatabases, s.createDatabase)
 	r.Delete(config.RouteDatabase, s.deleteDatabase)
 	r.Post(config.RouteDBPassword, s.resetPassword)
-	r.Put(config.RouteExpiry, s.setExpiry)
-	r.Post(config.RouteExtend, s.extend)
 	r.Get(config.RouteTableRows, s.previewRows)
 	r.Post(config.RouteQuery, s.query)
+	r.Get(config.RouteTableData, s.browse)
+	r.Post(config.RouteTableData, s.insertRow)
+	r.Patch(config.RouteTableData, s.updateRow)
+	r.Delete(config.RouteTableData, s.deleteRow)
 	r.Post(config.RouteDBUsers, s.createUser)
 	r.Delete(config.RouteDBUser, s.deleteUser)
 	r.Post(config.RouteDBUserPass, s.resetUserPassword)
@@ -182,6 +236,51 @@ func (s *server) ownerRoutes(r chi.Router) {
 	r.Patch(config.RouteAdmin, s.updateAdmin)
 	r.Post(config.RouteAdminPass, s.resetAdminPassword)
 	r.Delete(config.RouteAdmin, s.deleteAdmin)
+	// Inactivity policy: only the operator running docker compose (the
+	// panel owner) sets the global default and per-database exceptions.
+	r.Put(config.RouteExpiry, s.setExpiry)
+	r.Post(config.RouteExtend, s.extend)
+	r.Get(config.RouteGlobalExpiry, s.getGlobalExpiry)
+	r.Put(config.RouteGlobalExpiry, s.setGlobalExpiry)
+	// Usuarios: self-service tenants. Only the owner adds one directly,
+	// deletes one, or moves its expiry exception.
+	r.Get(config.RouteClients, s.listClients)
+	r.Post(config.RouteClients, s.createClient)
+	r.Delete(config.RouteClient, s.deleteClient)
+	r.Put(config.RouteClientExpiry, s.setClientExpiry)
+	r.Post(config.RouteClientPassword, s.resetClientPassword)
+}
+
+// clientRoutes is the reduced "panel de usuario": a self-service client can
+// only ever see and change their own databases. Every handler re-checks
+// ownership server-side (see ownDatabase) — slug guessing never reaches
+// another client's data.
+func (s *server) clientRoutes(r chi.Router) {
+	r.Post(config.RouteMyAccountPassword, s.changeOwnClientPassword)
+	r.Get(config.RouteMyDatabases, s.listMyDatabases)
+	r.Post(config.RouteMyDatabases, s.createMyDatabase)
+	r.Get(config.RouteMyDatabase, s.getMyDatabase)
+	r.Delete(config.RouteMyDatabase, s.deleteMyDatabase)
+	r.Get(config.RouteMyConnection, s.myConnection)
+	r.Get(config.RouteMyStats, s.myStats)
+	r.Get(config.RouteMyLiveConnections, s.myLiveConnections)
+	r.Get(config.RouteMyTemplates, s.myTemplates)
+	r.Get(config.RouteMyAccount, s.myAccount)
+	r.Patch(config.RouteMyAccount, s.updateMyAccount)
+	r.Get(config.RouteMyGoogleLink, s.googleLink)
+	r.Get(config.RouteMyActivity, s.myActivity)
+	r.Get(config.RouteMyBackups, s.myBackups)
+	r.Post(config.RouteMyDBBackups, s.createMyBackup)
+	r.Get(config.RouteMyBackupFile, s.downloadMyBackup)
+	r.Delete(config.RouteMyBackup, s.deleteMyBackup)
+	r.Post(config.RouteMyBackupRestore, s.restoreMyBackup)
+	r.Get(config.RouteMySchema, s.mySchema)
+	r.Post(config.RouteMyDBPassword, s.resetMyPassword)
+	r.Get(config.RouteMyTableData, s.browseMyTable)
+	r.Post(config.RouteMyTableData, s.insertMyRow)
+	r.Patch(config.RouteMyTableData, s.updateMyRow)
+	r.Delete(config.RouteMyTableData, s.deleteMyRow)
+	r.Get(config.RouteMyTableCount, s.countMyRows)
 }
 
 // securityHeaders hardens every response. Scripts and styles must come from
@@ -209,10 +308,31 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *server) settings(w http.ResponseWriter, _ *http.Request) {
+func (s *server) settings(w http.ResponseWriter, r *http.Request) {
 	st := s.Settings
 	st.NotifyChannels = s.Notifier.Channels()
+	// The owner can change the inactivity policy at runtime (Ajustes ->
+	// Expiración); reflect that override here instead of the .env value
+	// baked in at startup.
+	if override, err := s.Databases.GlobalSettings(r.Context()); err == nil {
+		if override.ExpirationDays != nil {
+			st.ExpirationDays = *override.ExpirationDays
+		}
+		if override.ExpiringSoonDays != nil {
+			st.ExpiringSoonDays = *override.ExpiringSoonDays
+		}
+	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// publicConfig is the only unauthenticated config: the login screen needs to
+// know whether to offer "Crear cuenta".
+func (s *server) publicConfig(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"allowSelfRegister": s.Settings.AllowSelfRegister,
+		"googleEnabled":     s.Google != nil,
+		"passwordEnabled":   s.Settings.AuthMode != config.AuthModeGoogle,
+	})
 }
 
 func (s *server) listAudit(w http.ResponseWriter, r *http.Request) {
@@ -273,8 +393,10 @@ func (s *server) domainError(w http.ResponseWriter, op string, err error) {
 	switch {
 	case errors.As(err, &invalidInput):
 		writeError(w, http.StatusBadRequest, invalidInput.Error())
-	case isAdminValidation(err):
+	case isAdminValidation(err), isClientValidation(err):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, clients.ErrEmailTaken), errors.Is(err, clients.ErrUsernameTaken):
+		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, model.ErrConflict):
 		writeError(w, http.StatusConflict, "ya existe un elemento con ese nombre")
 	case errors.Is(err, model.ErrNotFound):
@@ -282,6 +404,15 @@ func (s *server) domainError(w http.ResponseWriter, op string, err error) {
 	default:
 		s.internalError(w, op, err)
 	}
+}
+
+func isClientValidation(err error) bool {
+	for _, e := range []error{clients.ErrEmail, clients.ErrFullName, clients.ErrUsername, clients.ErrEmailUseNotAccepted, clients.ErrWeakPassword, clients.ErrWrongPassword, clients.ErrRegisterDisabled} {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+	return false
 }
 
 func isAdminValidation(err error) bool {

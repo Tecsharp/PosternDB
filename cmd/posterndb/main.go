@@ -25,13 +25,16 @@ import (
 	"github.com/tecsharp/posterndb/internal/admins"
 	"github.com/tecsharp/posterndb/internal/auditor"
 	"github.com/tecsharp/posterndb/internal/auth"
+	"github.com/tecsharp/posterndb/internal/clients"
 	"github.com/tecsharp/posterndb/internal/cloudflare"
 	"github.com/tecsharp/posterndb/internal/config"
 	"github.com/tecsharp/posterndb/internal/credentials"
 	"github.com/tecsharp/posterndb/internal/expiry"
 	"github.com/tecsharp/posterndb/internal/httpapi"
+	"github.com/tecsharp/posterndb/internal/model"
 	"github.com/tecsharp/posterndb/internal/naming"
 	"github.com/tecsharp/posterndb/internal/notify"
+	"github.com/tecsharp/posterndb/internal/oauth"
 	"github.com/tecsharp/posterndb/internal/provision"
 	"github.com/tecsharp/posterndb/internal/store"
 	"github.com/tecsharp/posterndb/web"
@@ -82,6 +85,7 @@ type application struct {
 	router    cloudflare.Router
 	service   *provision.Service
 	admins    *admins.Service
+	clients   *clients.Service
 	notifier  *notify.Multi
 	inspector *store.Inspector
 }
@@ -127,9 +131,24 @@ func build(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, logger *
 		BackupDir:          cfg.BackupDir,
 		Logger:             logger,
 	})
+	adminSvc := admins.New(meta, secrets, cfg.AdminUser)
+	// A registered user may not take the owner's or an administrator's name.
+	reserved := func(ctx context.Context, name string) (bool, error) {
+		if name == cfg.AdminUser {
+			return true, nil
+		}
+		if _, err := adminSvc.RoleOf(ctx, name); err == nil {
+			return true, nil
+		} else if !errors.Is(err, model.ErrNotFound) {
+			return false, err
+		}
+		return false, nil
+	}
 	return &application{
 		pool: pool, meta: meta, cluster: cluster, router: router, service: service, inspector: inspector,
-		admins: admins.New(meta, secrets, cfg.AdminUser), notifier: notify.New(cfg.Notify),
+		admins:   adminSvc,
+		clients:  clients.New(meta, secrets, cfg.AllowSelfRegister, clients.WithReservedNames(reserved)),
+		notifier: notify.New(cfg.Notify),
 	}, nil
 }
 
@@ -178,13 +197,22 @@ func serve(ctx context.Context, cfg *config.Config, app *application, logger *sl
 	if !cfg.LocalMode {
 		go publishPanel(ctx, cfg, app.router, logger)
 	}
-	go auditor.New(app.meta, app.cluster, app.service, app.notifier, expiry.NewPolicy(cfg), cfg.CheckInterval, logger).Run(ctx)
+	go auditor.New(app.meta, app.cluster, app.service, app.notifier, cfg.CheckInterval, logger).Run(ctx)
 
+	authn := auth.New(cfg.AdminUser, cfg.AdminPassword, cfg.JWTSecret, config.SessionTTL, app.admins, app.clients)
+	authn.SetClientPasswordLogin(cfg.ClientPasswordLogin())
+	var google httpapi.GoogleAuth
+	if cfg.GoogleActive() {
+		google = oauth.NewGoogle(ctx, cfg.Google.ClientID, cfg.Google.ClientSecret, cfg.Google.RedirectURL)
+		logger.Info("google sign-in enabled", "redirectURL", cfg.Google.RedirectURL)
+	}
 	handler := httpapi.NewRouter(httpapi.Deps{
-		Auth:      auth.New(cfg.AdminUser, cfg.AdminPassword, cfg.JWTSecret, config.SessionTTL, app.admins),
+		Auth:      authn,
 		Limiter:   auth.NewRateLimiter(config.LoginRatePerMinute, config.LoginRateBurst),
 		Databases: app.service,
 		Admins:    app.admins,
+		Clients:   app.clients,
+		Google:    google,
 		Audit:     app.meta,
 		Health:    app.pool,
 		Notifier:  app.notifier,
@@ -235,17 +263,20 @@ func publishPanel(ctx context.Context, cfg *config.Config, router cloudflare.Rou
 
 func settingsFrom(cfg *config.Config) httpapi.Settings {
 	return httpapi.Settings{
-		BaseDomain:         cfg.BaseDomain,
-		PanelHostname:      cfg.PanelHostname,
-		ClientHostPrefix:   cfg.ClientHostPrefix,
-		ExampleHostname:    naming.NewResolver(cfg).Hostname("cliente1"),
-		ExpirationDays:     int(cfg.DBExpiration.Hours() / 24),
-		ExpiringSoonDays:   int(cfg.ExpiringSoon.Hours() / 24),
-		CheckIntervalHours: int(cfg.CheckInterval.Hours()),
-		BackupBeforeDelete: cfg.BackupBeforeDelete,
-		LocalMode:          cfg.LocalMode,
-		LocalDBPort:        cfg.LocalDBPort,
-		ClientLocalPort:    cfg.ClientLocalPort,
+		BaseDomain:            cfg.BaseDomain,
+		PanelHostname:         cfg.PanelHostname,
+		ClientHostPrefix:      cfg.ClientHostPrefix,
+		ExampleHostname:       naming.NewResolver(cfg).Hostname("cliente1"),
+		ExpirationDays:        int(cfg.DBExpiration.Hours() / 24),
+		ExpiringSoonDays:      int(cfg.ExpiringSoon.Hours() / 24),
+		CheckIntervalHours:    int(cfg.CheckInterval.Hours()),
+		BackupBeforeDelete:    cfg.BackupBeforeDelete,
+		LocalMode:             cfg.LocalMode,
+		LocalDBPort:           cfg.LocalDBPort,
+		ClientLocalPort:       cfg.ClientLocalPort,
+		AllowSelfRegister:     cfg.AllowSelfRegister,
+		MaxDatabasesPerClient: cfg.MaxDatabasesPerUser,
+		AuthMode:              cfg.AuthMode,
 	}
 }
 

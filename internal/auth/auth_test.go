@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,7 @@ import (
 const secret = "0123456789abcdef0123456789abcdef"
 
 func newAuth() *Authenticator {
-	return New("admin", "correct horse battery", secret, time.Hour, nil)
+	return New("admin", "correct horse battery", secret, time.Hour, nil, nil)
 }
 
 func TestCheckCredentials(t *testing.T) {
@@ -50,7 +51,7 @@ func TestVerifyRejectsExpired(t *testing.T) {
 }
 
 func TestVerifyRejectsForeignSignature(t *testing.T) {
-	other := New("admin", "x", strings.Repeat("z", 32), time.Hour, nil)
+	other := New("admin", "x", strings.Repeat("z", 32), time.Hour, nil, nil)
 	token, _, _ := other.Issue("admin")
 	_, err := newAuth().Verify(token)
 	assert.ErrorIs(t, err, ErrInvalidSession)
@@ -108,7 +109,7 @@ func TestMiddleware(t *testing.T) {
 
 func TestSessionCookieAttributes(t *testing.T) {
 	rec := httptest.NewRecorder()
-	SetSessionCookie(rec, "tok", time.Now().Add(time.Hour), true)
+	SetSessionCookie(rec, "tok", time.Now().Add(time.Hour), true, true)
 	c := rec.Result().Cookies()[0]
 	assert.True(t, c.HttpOnly)
 	assert.True(t, c.Secure)
@@ -143,4 +144,45 @@ func TestRequireCSRFHeader(t *testing.T) {
 
 func TestSubjectWithoutValue(t *testing.T) {
 	assert.Empty(t, Subject(httptest.NewRequest(http.MethodGet, "/", nil).Context()))
+}
+
+func TestMACSignsAndRejectsTampering(t *testing.T) {
+	a := New("root", "p", secret, time.Hour, nil, nil)
+	mac := a.MAC("state.nonce.1")
+	assert.True(t, a.CheckMAC("state.nonce.1", mac))
+	assert.False(t, a.CheckMAC("state.nonce.2", mac), "changed data")
+	assert.False(t, a.CheckMAC("state.nonce.1", mac+"x"), "changed signature")
+	assert.False(t, a.CheckMAC("state.nonce.1", ""), "no signature")
+
+	other := New("root", "p", strings.Repeat("z", 40), time.Hour, nil, nil)
+	assert.False(t, other.CheckMAC("state.nonce.1", mac), "another secret signs differently")
+}
+
+func TestSessionTTLRememberMeIsLongerAndCookieIsPersistentOnlyThen(t *testing.T) {
+	a := New("root", "p", secret, time.Hour, nil, nil)
+	assert.Equal(t, time.Hour, a.SessionTTL(false))
+	assert.Equal(t, config.RememberTTL, a.SessionTTL(true))
+	assert.Greater(t, config.RememberTTL, 24*time.Hour, "it has to survive days, not hours")
+
+	rec := httptest.NewRecorder()
+	SetSessionCookie(rec, "tok", time.Now().Add(time.Hour), false, true)
+	assert.True(t, rec.Result().Cookies()[0].Expires.IsZero(), "ends with the browser")
+	rec = httptest.NewRecorder()
+	SetSessionCookie(rec, "tok", time.Now().Add(time.Hour), true, true)
+	assert.False(t, rec.Result().Cookies()[0].Expires.IsZero(), "persists")
+}
+
+func TestClientPasswordLoginCanBeSwitchedOff(t *testing.T) {
+	clients := fakeClients{users: map[string]fakeClientUser{"bea": {id: 7, password: "bea-password-123"}}}
+	a := New("root", "p", secret, time.Hour, nil, clients)
+	_, ok, err := a.Login(context.Background(), "bea", "bea-password-123")
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	a.SetClientPasswordLogin(false)
+	_, ok, err = a.Login(context.Background(), "bea", "bea-password-123")
+	require.NoError(t, err)
+	assert.False(t, ok, "AUTH_MODE=google: registered users have no password login")
+	_, ok, _ = a.Login(context.Background(), "root", "p")
+	assert.True(t, ok, "the owner always can")
 }

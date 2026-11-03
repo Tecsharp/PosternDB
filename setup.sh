@@ -3,8 +3,8 @@
 #
 # Safe to run as many times as you want. Every run:
 #   1. Checks Docker (and starts Docker Desktop on macOS if it is closed).
-#   2. Creates .env if missing and adds settings introduced by newer versions
-#      of .env.example, without touching values you already set.
+#   2. Creates .env if missing and keeps it organized in the sections of
+#      .env.example, adding new settings without touching your values.
 #   3. Generates secrets that are still empty (never overwrites existing ones)
 #      and prints the panel credentials the first time they are generated.
 #   4. Rebuilds the image and (re)starts every service, keeping all data.
@@ -73,6 +73,8 @@ get_var() {
   local line
   line=$(grep -E "^$1=" "$ENV_FILE" | tail -n 1 || true)
   line=${line#*=}
+  # A stray space after the value ("LOCAL_MODE=true ") must not change its meaning.
+  line=${line#"${line%%[![:space:]]*}"}; line=${line%"${line##*[![:space:]]}"}
   line=${line%\"}; line=${line#\"}
   printf '%s' "$line"
 }
@@ -93,15 +95,47 @@ set_var() {
   rm -f "$tmp"
 }
 
-# Settings added to .env.example by newer versions are appended with their
-# default value; existing settings are never modified.
-while IFS= read -r line; do
-  key=${line%%=*}
-  if ! has_var "$key"; then
-    set_var "$key" "${line#*=}"
-    info "Added new setting $key to $ENV_FILE"
+# The last assignment of a key, exactly as written (no quote stripping).
+raw_var() { grep -E "^$1=" "$ENV_FILE" | tail -n 1 | cut -d= -f2-; }
+
+# Rebuilds .env with the layout of .env.example (sections and comments), so
+# new settings land in their section instead of piling up at the end. Every
+# value you already set is kept byte for byte; settings the example does not
+# know go to a final block. The previous file is saved as .env.bak.
+organize_env() {
+  local tmp line key known=" " extras=()
+  tmp=$(mktemp)
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^([A-Z][A-Z0-9_]*)= ]]; then
+      key=${BASH_REMATCH[1]}
+      known+="$key "
+      if has_var "$key"; then
+        printf '%s=%s\n' "$key" "$(raw_var "$key")" >>"$tmp"
+      else
+        printf '%s\n' "$line" >>"$tmp"
+        info "Added new setting $key to $ENV_FILE"
+      fi
+    else
+      printf '%s\n' "$line" >>"$tmp"
+    fi
+  done <"$EXAMPLE_FILE"
+
+  while IFS= read -r key; do
+    [[ "$known" == *" $key "* ]] || extras+=("$key")
+  done < <(grep -oE '^[A-Z][A-Z0-9_]*=' "$ENV_FILE" | tr -d '=' | awk '!seen[$0]++')
+  if (( ${#extras[@]} > 0 )); then
+    printf '\n# -----------------------------------------------------------------------------\n#  OTRAS VARIABLES (no vienen en .env.example)\n# -----------------------------------------------------------------------------\n' >>"$tmp"
+    for key in "${extras[@]}"; do printf '%s=%s\n' "$key" "$(raw_var "$key")" >>"$tmp"; done
   fi
-done < <(grep -E '^[A-Z][A-Z0-9_]*=' "$EXAMPLE_FILE")
+
+  if ! cmp -s "$tmp" "$ENV_FILE"; then
+    cp -p "$ENV_FILE" "$ENV_FILE.bak"
+    cat "$tmp" >"$ENV_FILE"   # keep original permissions
+    info "Organized $ENV_FILE into sections (previous copy: $ENV_FILE.bak)"
+  fi
+  rm -f "$tmp"
+}
+organize_env
 
 random_string() {
   # Reads a fixed number of bytes first so pipefail never trips on SIGPIPE.

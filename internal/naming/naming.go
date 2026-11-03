@@ -52,9 +52,9 @@ type ClientNames struct {
 }
 
 // Resolver derives names using the hostname scheme configured in .env:
-// <CLIENT_HOST_PREFIX><slug>.<BASE_DOMAIN>. With BASE_DOMAIN=pachislab.com
+// <CLIENT_HOST_PREFIX><slug>.<BASE_DOMAIN>. With BASE_DOMAIN=midominio.com
 // and CLIENT_HOST_PREFIX=postern- a client "acme" becomes
-// postern-acme.pachislab.com (one level deep, so Cloudflare's free Universal
+// postern-acme.midominio.com (one level deep, so Cloudflare's free Universal
 // SSL wildcard covers it).
 //
 // In local mode there is no public hostname: Hostname returns "".

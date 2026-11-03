@@ -17,6 +17,11 @@ type CreateRequest struct {
 	TemplateID      int64  `json:"templateId,omitempty"`
 	CloneFrom       string `json:"cloneFrom,omitempty"`
 	RestoreBackupID int64  `json:"restoreBackupId,omitempty"`
+	// ClientUserID, when set, makes the new database belong to that
+	// self-service client (see model.ClientUser) rather than being an
+	// admin-panel database. Never read from the request body: the HTTP
+	// layer sets it from the authenticated identity.
+	ClientUserID *int64 `json:"-"`
 }
 
 func (r CreateRequest) sources() int {
@@ -71,7 +76,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, actor string) (
 			done = append(done, *comp)
 		}
 	}
-	db, err := s.recordDatabase(ctx, p.names)
+	db, err := s.recordDatabase(ctx, p.names, actor, p.req.ClientUserID)
 	if err != nil {
 		s.rollback(ctx, p.names, done, err)
 		return model.Credentials{}, err
@@ -224,9 +229,9 @@ func (s *Service) enqueueContent(ctx context.Context, p *provisioning) (*compens
 	return nil, nil
 }
 
-func (s *Service) recordDatabase(ctx context.Context, n naming.ClientNames) (model.ClientDatabase, error) {
+func (s *Service) recordDatabase(ctx context.Context, n naming.ClientNames, actor string, clientUserID *int64) (model.ClientDatabase, error) {
 	db, err := s.meta.InsertDatabase(ctx, model.ClientDatabase{
-		Slug: n.Slug, DBName: n.Database, RoleName: n.Role, Hostname: n.Hostname, LastSeenAt: s.opts.Now(),
+		Slug: n.Slug, DBName: n.Database, RoleName: n.Role, Hostname: n.Hostname, LastSeenAt: s.opts.Now(), ClientUserID: clientUserID,
 	})
 	if err != nil {
 		return db, fmt.Errorf("record metadata: %w", err)
@@ -360,7 +365,7 @@ type HostnameChange struct {
 }
 
 // MigrateHostnames moves every active database to the hostname scheme in the
-// current configuration (e.g. postern-acme.pachislab.com -> acme.posterndb.com).
+// current configuration (e.g. postern-acme.midominio.com -> acme.midominio.com).
 // The new route is published before the old one is removed.
 func (s *Service) MigrateHostnames(ctx context.Context, dryRun bool, actor string) ([]HostnameChange, error) {
 	if s.opts.Resolver.Local {

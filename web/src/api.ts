@@ -1,16 +1,50 @@
 // Typed client for the PosternDB JSON API.
 
 export type Status = 'activa' | 'por_expirar' | 'expirada'
-export type Role = 'owner' | 'admin' | 'viewer'
+export type Role = 'owner' | 'admin' | 'viewer' | 'client'
 export type Access = 'read' | 'write'
 
 export interface Session {
   user: string
   role: Role
   bootstrap: boolean
+  // Only for role "client".
+  email?: string
+  fullName?: string
+  hasPassword?: boolean
+  needsUsername?: boolean
+  googleLinked?: boolean
+}
+
+/** What a registered user sees and edits about their own account. */
+export interface Account {
+  username: string
+  email: string
+  fullName: string
+  googleLinked: boolean
+  hasPassword: boolean
+  needsUsername: boolean
+  createdAt: string
+  maxDatabases: number
+  databaseCount: number
+}
+
+export interface RegisterForm {
+  email: string
+  fullName: string
+  password: string
+  acceptEmailUse: boolean
+}
+
+export interface PublicConfig {
+  allowSelfRegister: boolean
+  googleEnabled: boolean
+  /** false when AUTH_MODE=google: registered users have no password login. */
+  passwordEnabled: boolean
 }
 
 export interface Database {
+  clientUserId?: number
   id: number
   slug: string
   database: string
@@ -106,6 +140,26 @@ export interface QueryResult {
   durationMs: number
 }
 
+export interface DataColumn {
+  name: string
+  type: string
+  nullable: boolean
+  primaryKey: boolean
+  hasDefault: boolean
+  generated: boolean
+}
+
+export interface TableData {
+  columns: DataColumn[]
+  rows: (string | null)[][]
+  total: number
+  page: number
+  pageSize: number
+  editable: boolean
+}
+
+export type RowValues = Record<string, string | null>
+
 export interface DatabaseUser {
   id: number
   name: string
@@ -135,7 +189,18 @@ export interface Template {
   name: string
   description: string
   sql: string
+  shared: boolean
   updatedAt: string
+}
+
+export interface Connection {
+  pid: number
+  user: string
+  application: string
+  state: string
+  connectedAt: string
+  stateSince?: string
+  query?: string
 }
 
 export interface Admin {
@@ -157,6 +222,30 @@ export interface AuditEntry {
   details?: Record<string, unknown>
 }
 
+export interface ClientUser {
+  id: number
+  username: string
+  email?: string
+  fullName?: string
+  googleLinked: boolean
+  hasPassword: boolean
+  neverExpires: boolean
+  maxIdleDays?: number
+  createdAt: string
+  createdBy?: string
+  updatedAt: string
+  updatedBy?: string
+  databaseCount?: number
+  lastLoginAt?: string
+}
+
+export interface PlatformSettings {
+  expirationDays: number | null
+  expiringSoonDays: number | null
+  updatedAt: string
+  updatedBy?: string
+}
+
 export interface Settings {
   baseDomain: string
   panelHostname: string
@@ -170,6 +259,8 @@ export interface Settings {
   localDbPort: number
   clientLocalPort: number
   notifyChannels: string[]
+  allowSelfRegister: boolean
+  maxDatabasesPerClient: number
 }
 
 export interface CreateRequest {
@@ -214,14 +305,27 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 const db = (slug: string) => `/databases/${encodeURIComponent(slug)}`
+const tablePath = (slug: string, schema: string, table: string) =>
+  `${db(slug)}/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`
 
 export const api = {
   session: () => request<Session>('GET', '/auth/session'),
-  login: (username: string, password: string) => request<Session>('POST', '/auth/login', { username, password }),
+  login: (username: string, password: string, remember = false) => request<Session>('POST', '/auth/login', { username, password, remember }),
+  register: (form: RegisterForm) => request<Session>('POST', '/auth/register', form),
   logout: () => request<void>('POST', '/auth/logout'),
+  publicConfig: () => request<PublicConfig>('GET', '/auth/config'),
   changePassword: (current: string, next: string) => request<void>('POST', '/auth/password', { current, next }),
   settings: () => request<Settings>('GET', '/settings'),
   testNotification: () => request<void>('POST', '/notifications/test'),
+  globalExpiry: () => request<PlatformSettings>('GET', '/settings/expiry'),
+  setGlobalExpiry: (expirationDays: number | null, expiringSoonDays: number | null) =>
+    request<PlatformSettings>('PUT', '/settings/expiry', { expirationDays, expiringSoonDays }),
+  clients: () => request<{ clients: ClientUser[] }>('GET', '/clients').then((r) => r.clients),
+  createClient: (email: string, fullName: string) => request<{ client: ClientUser; password: string }>('POST', '/clients', { email, fullName }),
+  resetClientPassword: (id: number) => request<{ password: string }>('POST', `/clients/${id}/password`),
+  setClientExpiry: (id: number, neverExpires: boolean, maxIdleDays: number | null) =>
+    request<ClientUser>('PUT', `/clients/${id}/expiry`, { neverExpires, maxIdleDays }),
+  deleteClient: (id: number) => request<void>('DELETE', `/clients/${id}`),
 
   databases: () => request<{ databases: Database[] }>('GET', '/databases').then((r) => r.databases),
   database: (slug: string) => request<Database>('GET', db(slug)),
@@ -233,6 +337,8 @@ export const api = {
     request<Database>('PUT', `${db(slug)}/expiry`, { neverExpires, maxIdleDays }),
   extend: (slug: string, days: number) => request<Database>('POST', `${db(slug)}/extend`, { days }),
   stats: (slug: string) => request<Stats>('GET', `${db(slug)}/stats`),
+  liveConnections: (slug: string) =>
+    request<{ connections: Connection[] }>('GET', `${db(slug)}/live-connections`).then((r) => r.connections),
   schema: (slug: string) => request<Schema>('GET', `${db(slug)}/schema`),
   query: (slug: string, sql: string) => request<QueryResult>('POST', `${db(slug)}/query`, { sql }),
   preview: (slug: string, schema: string, table: string) =>
@@ -241,6 +347,17 @@ export const api = {
     request<{ rows: number }>('GET', `${db(slug)}/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/count`).then(
       (r) => r.rows,
     ),
+  tableData: (slug: string, schema: string, table: string, page: number, sort?: string, desc?: boolean) =>
+    request<TableData>(
+      'GET',
+      `${tablePath(slug, schema, table)}/data?page=${page}&size=50${sort ? `&sort=${encodeURIComponent(sort)}&dir=${desc ? 'desc' : 'asc'}` : ''}`,
+    ),
+  insertRow: (slug: string, schema: string, table: string, values: RowValues) =>
+    request<void>('POST', `${tablePath(slug, schema, table)}/data`, { values }),
+  updateRow: (slug: string, schema: string, table: string, key: RowValues, values: RowValues) =>
+    request<void>('PATCH', `${tablePath(slug, schema, table)}/data`, { key, values }),
+  deleteRow: (slug: string, schema: string, table: string, key: RowValues) =>
+    request<void>('DELETE', `${tablePath(slug, schema, table)}/data`, { key }),
   users: (slug: string) => request<{ users: DatabaseUser[] }>('GET', `${db(slug)}/users`).then((r) => r.users),
   createUser: (slug: string, name: string, access: Access) =>
     request<Credentials>('POST', `${db(slug)}/users`, { name, access }),
@@ -258,10 +375,10 @@ export const api = {
   restoreBackup: (id: number, name: string) => request<Credentials>('POST', `/backups/${id}/restore`, { name }),
 
   templates: () => request<{ templates: Template[] }>('GET', '/templates').then((r) => r.templates),
-  saveTemplate: (t: Pick<Template, 'name' | 'description' | 'sql'> & { id?: number }) =>
-    t.id
-      ? request<Template>('PUT', `/templates/${t.id}`, { name: t.name, description: t.description, sql: t.sql })
-      : request<Template>('POST', '/templates', { name: t.name, description: t.description, sql: t.sql }),
+  saveTemplate: (t: Pick<Template, 'name' | 'description' | 'sql' | 'shared'> & { id?: number }) => {
+    const body = { name: t.name, description: t.description, sql: t.sql, shared: t.shared }
+    return t.id ? request<Template>('PUT', `/templates/${t.id}`, body) : request<Template>('POST', '/templates', body)
+  },
   deleteTemplate: (id: number) => request<void>('DELETE', `/templates/${id}`),
 
   audit: () => request<{ entries: AuditEntry[] }>('GET', '/audit').then((r) => r.entries),
@@ -276,7 +393,51 @@ export const api = {
   deleteAdmin: (username: string) => request<void>('DELETE', `/admins/${encodeURIComponent(username)}`),
 }
 
+// ---- "Mis bases": the reduced panel a self-service client lands on ------------------------
+
+const myDb = (slug: string) => `/me/databases/${encodeURIComponent(slug)}`
+const myTablePath = (slug: string, schema: string, table: string) =>
+  `${myDb(slug)}/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`
+
+export const me = {
+  changePassword: (current: string, next: string) => request<void>('POST', '/me/password', { current, next }),
+  account: () => request<Account>('GET', '/me/account'),
+  updateAccount: (patch: { username?: string; fullName?: string }) => request<Account>('PATCH', '/me/account', patch),
+  googleLinkUrl: '/api/me/google/link',
+  backups: () => request<{ backups: Job[] }>('GET', '/me/backups').then((r) => r.backups),
+  createBackup: (slug: string) => request<Job>('POST', `${myDb(slug)}/backups`),
+  backupDownloadUrl: (id: number) => `/api/me/backups/${id}/download`,
+  deleteBackup: (id: number) => request<void>('DELETE', `/me/backups/${id}`),
+  restoreBackup: (id: number, name: string) => request<Credentials>('POST', `/me/backups/${id}/restore`, { name }),
+  activity: () => request<{ entries: AuditEntry[] }>('GET', '/me/activity').then((r) => r.entries),
+  databases: () => request<{ databases: Database[] }>('GET', '/me/databases').then((r) => r.databases),
+  templates: () => request<{ templates: Template[] }>('GET', '/me/templates').then((r) => r.templates),
+  create: (name: string, templateId?: number) => request<Credentials>('POST', '/me/databases', { name, templateId }),
+  database: (slug: string) => request<Database>('GET', myDb(slug)),
+  remove: (slug: string) => request<void>('DELETE', myDb(slug), { confirm: slug }),
+  connection: (slug: string) => request<ConnectionInfo>('GET', `${myDb(slug)}/connection`),
+  resetPassword: (slug: string) => request<Credentials>('POST', `${myDb(slug)}/password`),
+  stats: (slug: string) => request<Stats>('GET', `${myDb(slug)}/stats`),
+  liveConnections: (slug: string) =>
+    request<{ connections: Connection[] }>('GET', `${myDb(slug)}/live-connections`).then((r) => r.connections),
+  schema: (slug: string) => request<Schema>('GET', `${myDb(slug)}/schema`),
+  count: (slug: string, schema: string, table: string) =>
+    request<{ rows: number }>('GET', `${myTablePath(slug, schema, table)}/count`).then((r) => r.rows),
+  tableData: (slug: string, schema: string, table: string, page: number, sort?: string, desc?: boolean) =>
+    request<TableData>(
+      'GET',
+      `${myTablePath(slug, schema, table)}/data?page=${page}&size=50${sort ? `&sort=${encodeURIComponent(sort)}&dir=${desc ? 'desc' : 'asc'}` : ''}`,
+    ),
+  insertRow: (slug: string, schema: string, table: string, values: RowValues) =>
+    request<void>('POST', `${myTablePath(slug, schema, table)}/data`, { values }),
+  updateRow: (slug: string, schema: string, table: string, key: RowValues, values: RowValues) =>
+    request<void>('PATCH', `${myTablePath(slug, schema, table)}/data`, { key, values }),
+  deleteRow: (slug: string, schema: string, table: string, key: RowValues) =>
+    request<void>('DELETE', `${myTablePath(slug, schema, table)}/data`, { key }),
+}
+
 export const can = {
   operate: (role: Role) => role === 'owner' || role === 'admin',
   manageAdmins: (role: Role) => role === 'owner',
+  manageExpiry: (role: Role) => role === 'owner',
 }

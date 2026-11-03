@@ -37,7 +37,7 @@ export function Admins({ session }: PageProps) {
         subtitle="Quién puede entrar al panel y qué puede hacer."
         actions={
           <Button variant="primary" onClick={() => setAdding(true)}>
-            <UserPlusRoundedIcon size={16} aria-hidden />
+            <UserPlusRoundedIcon size={18} aria-hidden />
             Invitar administrador
           </Button>
         }
@@ -52,10 +52,10 @@ export function Admins({ session }: PageProps) {
               return (
                 <li key={a.username} className="flex flex-wrap items-center gap-3 px-5 py-3.5">
                   <div className="min-w-0 flex-1">
-                    <p className="text-[13.5px] font-semibold">
+                    <p className="text-[0.97rem] font-semibold">
                       {a.username} {self && <span className="font-normal text-ink-2">(tú)</span>}
                     </p>
-                    <p className="text-[12px] text-ink-2">
+                    <p className="text-[0.85rem] text-ink-2">
                       {a.bootstrap
                         ? 'Definido en .env (ADMIN_USER). No se puede modificar desde aquí.'
                         : `Creado por ${a.createdBy} el ${formatDate(a.createdAt)}${a.lastLoginAt ? `, último acceso ${formatRelative(a.lastLoginAt)}` : ', nunca ha entrado'}`}
@@ -70,7 +70,7 @@ export function Admins({ session }: PageProps) {
                       </label>
                       <select
                         id={`role-${a.username}`}
-                        className="field h-8 w-40 text-[12.5px]"
+                        className="field h-8 w-40 text-[0.9rem]"
                         value={a.role}
                         onChange={async (e) => {
                           await action.run(() => api.setAdminRole(a.username, e.target.value as Role))
@@ -106,8 +106,8 @@ export function Admins({ session }: PageProps) {
         <dl className="mt-6 grid gap-3 md:grid-cols-3">
           {roles.map((r) => (
             <div key={r.id} className="px-1">
-              <dt className="text-[13px] font-semibold">{r.label}</dt>
-              <dd className="mt-1 text-[12.5px] leading-relaxed text-ink-2">{r.hint}</dd>
+              <dt className="text-[0.95rem] font-semibold">{r.label}</dt>
+              <dd className="mt-1 text-[0.9rem] leading-relaxed text-ink-2">{r.hint}</dd>
             </div>
           ))}
         </dl>
@@ -189,11 +189,11 @@ function AddAdminSheet({ open, onClose, onCreated }: { open: boolean; onClose: (
           <fieldset>
             <legend className="label">Rol</legend>
             {roles.map((r) => (
-              <label key={r.id} className="flex items-start gap-2.5 py-1.5 text-[13px]">
+              <label key={r.id} className="flex items-start gap-2.5 py-1.5 text-[0.95rem]">
                 <input type="radio" name="role" className="mt-0.5 accent-[var(--accent)]" checked={role === r.id} onChange={() => setRole(r.id)} />
                 <span>
                   <span className="font-semibold">{r.label}</span>
-                  <span className="block text-[12px] text-ink-2">{r.hint}</span>
+                  <span className="block text-[0.85rem] text-ink-2">{r.hint}</span>
                 </span>
               </label>
             ))}

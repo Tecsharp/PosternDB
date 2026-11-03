@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -201,6 +202,15 @@ func (s *Service) Stats(ctx context.Context, slug string) (model.DatabaseStats, 
 	return st, err
 }
 
+// Connections lists the sessions open right now on a live database.
+func (s *Service) Connections(ctx context.Context, slug string) ([]model.Connection, error) {
+	db, err := s.active(ctx, slug)
+	if err != nil {
+		return nil, err
+	}
+	return s.cluster.DatabaseConnections(ctx, db.DBName)
+}
+
 // Schema returns the structure of a live database.
 func (s *Service) Schema(ctx context.Context, slug string) (model.Schema, error) {
 	db, err := s.active(ctx, slug)
@@ -336,6 +346,40 @@ func (s *Service) DeleteBackup(ctx context.Context, id int64, actor string) erro
 // ListTemplates returns every template.
 func (s *Service) ListTemplates(ctx context.Context) ([]model.Template, error) {
 	return s.meta.ListTemplates(ctx)
+}
+
+// ClientBackups lists the backups of every database a registered user owns,
+// newest first.
+func (s *Service) ClientBackups(ctx context.Context, clientUserID int64) ([]model.Job, error) {
+	dbs, err := s.meta.ListByClientUser(ctx, clientUserID)
+	if err != nil {
+		return nil, err
+	}
+	all := []model.Job{}
+	for _, d := range dbs {
+		jobs, err := s.meta.ListBackups(ctx, d.Slug)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, jobs...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].CreatedAt.After(all[j].CreatedAt) })
+	return all, nil
+}
+
+// SharedTemplates returns the templates offered to self-service users.
+func (s *Service) SharedTemplates(ctx context.Context) ([]model.Template, error) {
+	all, err := s.meta.ListTemplates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	shared := make([]model.Template, 0, len(all))
+	for _, t := range all {
+		if t.Shared {
+			shared = append(shared, t)
+		}
+	}
+	return shared, nil
 }
 
 // SaveTemplate creates or updates a template.
