@@ -29,6 +29,7 @@ type Metadata interface {
 	GetPlatformSettings(ctx context.Context) (model.PlatformSettings, error)
 	SetPlatformSettings(ctx context.Context, days, warnDays *int, actor string) (model.PlatformSettings, error)
 	ListClientUsers(ctx context.Context) ([]model.ClientUser, error)
+	GetClientUser(ctx context.Context, id int64) (model.ClientUser, error)
 	SetClientUserExpiry(ctx context.Context, id int64, never bool, maxIdleDays *int, actor string) (model.ClientUser, error)
 	ListByClientUser(ctx context.Context, clientUserID int64) ([]model.ClientDatabase, error)
 	CountByClientUser(ctx context.Context, clientUserID int64) (int, error)
@@ -73,7 +74,7 @@ type Inspector interface {
 	CountRows(ctx context.Context, database, owner, schema, table string) (int64, error)
 	ApplySQL(ctx context.Context, database, owner, sql string) error
 	GrantUser(ctx context.Context, database, owner, user, access string) error
-	Browse(ctx context.Context, database, owner, schema, table string, page, size int, sortColumn string, desc bool) (model.TableData, error)
+	Browse(ctx context.Context, database, owner, schema, table string, page, size int, sortColumn string, desc bool, knownTotal *int64) (model.TableData, error)
 	InsertRow(ctx context.Context, database, owner, schema, table string, values model.RowValues) error
 	UpdateRow(ctx context.Context, database, owner, schema, table string, key, values model.RowValues) error
 	DeleteRow(ctx context.Context, database, owner, schema, table string, key model.RowValues) error
@@ -178,6 +179,24 @@ func (s *Service) clientOverrides(ctx context.Context) map[int64]model.ClientUse
 	return out
 }
 
+// overridesFor is clientOverrides for the given owners only, so showing one
+// database does not read every account. Nil owners (unassigned) are skipped.
+func (s *Service) overridesFor(ctx context.Context, owners ...*int64) map[int64]model.ClientUser {
+	out := map[int64]model.ClientUser{}
+	for _, id := range owners {
+		if id == nil {
+			continue
+		}
+		u, err := s.meta.GetClientUser(ctx, *id)
+		if err != nil {
+			s.opts.Logger.Error("read client user", "id", *id, "error", err)
+			continue
+		}
+		out[u.ID] = u
+	}
+	return out
+}
+
 // ClientOverrides implements auditor.Lifecycle: every client's exception,
 // keyed by client_users.id.
 func (s *Service) ClientOverrides(ctx context.Context) map[int64]model.ClientUser {
@@ -185,19 +204,9 @@ func (s *Service) ClientOverrides(ctx context.Context) map[int64]model.ClientUse
 }
 
 // ListClients returns every registered client with how many databases they
-// own, for the owner-only Usuarios page.
+// own, for the Usuarios page.
 func (s *Service) ListClients(ctx context.Context) ([]model.ClientUser, error) {
-	users, err := s.meta.ListClientUsers(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range users {
-		n, err := s.meta.CountByClientUser(ctx, users[i].ID)
-		if err == nil {
-			users[i].DatabaseCount = n
-		}
-	}
-	return users, nil
+	return s.meta.ListClientUsers(ctx)
 }
 
 // SetClientExpiry creates, replaces or clears (never=false, maxIdleDays=nil)
@@ -223,7 +232,7 @@ func (s *Service) ClientDatabases(ctx context.Context, clientUserID int64) ([]Da
 		return nil, err
 	}
 	policy := s.EffectivePolicy(ctx)
-	overrides := s.clientOverrides(ctx)
+	overrides := s.overridesFor(ctx, &clientUserID)
 	views := make([]DatabaseView, 0, len(dbs))
 	for _, db := range dbs {
 		views = append(views, s.view(db, policy, overrides))
@@ -290,7 +299,7 @@ func (s *Service) Get(ctx context.Context, slug string) (DatabaseView, error) {
 	if err != nil {
 		return DatabaseView{}, err
 	}
-	return s.view(db, s.EffectivePolicy(ctx), s.clientOverrides(ctx)), nil
+	return s.view(db, s.EffectivePolicy(ctx), s.overridesFor(ctx, db.ClientUserID)), nil
 }
 
 // lookup validates the slug before touching the store.

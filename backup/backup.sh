@@ -77,9 +77,10 @@ run_job() {
         return
       fi
       size=$(wc -c <"$OUT_DIR/$file" | tr -d ' ')
-      if [ "$kind" = archive ]; then
-        dropdb --if-exists --force "$src"
-        qv 'DROP ROLE IF EXISTS :"role"' -v role="$src"
+      if [ "$kind" = archive ] && ! { dropdb --if-exists --force "$src" && qv 'DROP ROLE IF EXISTS :"role"' -v role="$src"; }; then
+        # The dump is safe in /backups; do not let a failed drop end the runner.
+        finish "$id" "failed" "se respaldó, pero no se pudo borrar la base archivada"
+        return
       fi
       finish "$id" "done" "" "$size"
       audit backup_completed "$slug" "{\"file\": \"$file\", \"bytes\": $size}"
@@ -125,6 +126,13 @@ adopt_orphans() {
       AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.source_db = d.datname AND j.status IN ('pending', 'running', 'failed'))" \
     >/dev/null 2>&1 || true
 }
+
+# This is the only runner, so anything still "running" was cut short by a
+# restart or crash. Dumps and deletes are safe to repeat; restores and clones
+# may have half-filled their target, so they are reported as failed instead.
+q -c "UPDATE jobs SET status = 'pending', started_at = NULL WHERE status = 'running' AND kind IN ('dump', 'archive', 'delete_file');
+  UPDATE jobs SET status = 'failed', error = 'interrumpido por un reinicio', finished_at = now() WHERE status = 'running'" \
+  >/dev/null || echo "warning: could not recover interrupted jobs" >&2
 
 echo "backup sidecar started (poll every ${INTERVAL}s)"
 while true; do

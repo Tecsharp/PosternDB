@@ -325,29 +325,6 @@ func TestSetFullName(t *testing.T) {
 	assert.ErrorIs(t, err, ErrFullName)
 }
 
-func TestListAndSetExpiry(t *testing.T) {
-	s, store := newService(t, true)
-	ctx := context.Background()
-	a, err := s.Register(ctx, form("ana@example.com"))
-	require.NoError(t, err)
-	_, _, err = s.Create(ctx, "bea@example.com", "Bea Ruiz", "root")
-	require.NoError(t, err)
-
-	list, err := s.List(ctx)
-	require.NoError(t, err)
-	assert.Len(t, list, 2)
-
-	days := 90
-	saved, err := s.SetExpiry(ctx, a.ID, false, &days, "root")
-	require.NoError(t, err)
-	require.NotNil(t, saved.MaxIdleDays)
-	assert.Equal(t, 90, *saved.MaxIdleDays)
-	assert.Contains(t, store.Actions(), config.ActionClientExpiryChanged)
-
-	_, err = s.SetExpiry(ctx, 9999, true, nil, "root")
-	assert.ErrorIs(t, err, model.ErrNotFound)
-}
-
 func TestChangeOwnPassword(t *testing.T) {
 	s, _ := newService(t, true)
 	ctx := context.Background()
@@ -423,4 +400,48 @@ func TestEveryAccountGetsAUniqueStableCode(t *testing.T) {
 	changed, err := s.SetUsername(ctx, byPassword.ID, "ana.lopez")
 	require.NoError(t, err)
 	assert.Equal(t, byPassword.Code, changed.Code, "not even when they pick a username")
+}
+
+func TestAuditHistoryDoesNotPassToWhoeverTakesTheNameNext(t *testing.T) {
+	s, store := newService(t, true)
+	ctx := context.Background()
+	u, err := s.Register(ctx, form("ana@example.com"))
+	require.NoError(t, err)
+	_, err = s.SetUsername(ctx, u.ID, "ana.lopez")
+	require.NoError(t, err)
+	require.NoError(t, s.store.RecordAudit(ctx, model.AuditEntry{Actor: "ana.lopez", Action: config.ActionLoginSuccess}))
+
+	// Renaming: what was recorded under the old name follows her to the new one.
+	_, err = s.SetUsername(ctx, u.ID, "ana.l")
+	require.NoError(t, err)
+	var actors []string
+	for _, e := range store.Audit {
+		actors = append(actors, e.Actor)
+	}
+	assert.NotContains(t, actors, "ana.lopez", "the old name is free again with no history attached")
+	assert.Contains(t, actors, "ana.l")
+
+	// Deleting: neither her email nor her username keeps matching anything.
+	require.NoError(t, s.Delete(ctx, u.ID, "root"))
+	for _, e := range store.Audit {
+		assert.NotContains(t, []string{"ana@example.com", "ana.l"}, e.Actor)
+		assert.NotContains(t, []string{"ana@example.com", "ana.l"}, e.Target)
+	}
+	assert.Contains(t, store.Actions(), config.ActionClientDeleted)
+}
+
+func TestStaffListsOnlyAccountsWithARole(t *testing.T) {
+	s, _ := newService(t, true)
+	ctx := context.Background()
+	a, err := s.Register(ctx, form("ana@example.com"))
+	require.NoError(t, err)
+	b, err := s.Register(ctx, form("bea@example.com"))
+	require.NoError(t, err)
+	_, err = s.SetRole(ctx, b.ID, config.RoleViewer, a.ID, "ana")
+	require.NoError(t, err)
+
+	staff, err := s.Staff(ctx)
+	require.NoError(t, err)
+	require.Len(t, staff, 1)
+	assert.Equal(t, "bea@example.com", staff[0].Username)
 }

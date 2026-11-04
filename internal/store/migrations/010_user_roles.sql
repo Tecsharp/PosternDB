@@ -22,7 +22,13 @@ BEGIN
         UPDATE client_users
            SET role = mapped, password_hash = COALESCE(NULLIF(password_hash, ''), a.password_hash), updated_at = now()
          WHERE username = a.username;
-        IF NOT FOUND THEN
+        IF FOUND THEN
+            -- Matching only by username cannot prove it is the same person, so
+            -- leave a trace the owner can check in Actividad and in the log.
+            RAISE NOTICE 'user % merged with the administrator of the same name (role %)', a.username, mapped;
+            INSERT INTO audit_log (actor, action, target, details)
+            VALUES ('migration-010', 'role_changed', a.username, jsonb_build_object('from', 'user', 'to', mapped, 'merged', true));
+        ELSE
             LOOP
                 c := chr(97 + floor(random() * 26)::int) || substr(md5(random()::text || clock_timestamp()::text || a.id::text), 1, 5);
                 EXIT WHEN NOT EXISTS (SELECT 1 FROM client_users WHERE code = c);

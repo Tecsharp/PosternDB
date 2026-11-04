@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 
@@ -66,10 +67,11 @@ func (s *server) createMyDatabase(w http.ResponseWriter, r *http.Request) {
 	if req.TemplateID != 0 && !s.isSharedTemplate(w, r, req.TemplateID) {
 		return
 	}
+	id := clientID(r)
+	defer s.lockCreating(id)()
 	if !s.hasRoomForDatabase(w, r) {
 		return
 	}
-	id := clientID(r)
 	req.ClientUserID = &id
 	creds, err := s.Databases.Create(r.Context(), req, actor(r))
 	s.secret(w, http.StatusCreated, "create my database", creds, err)
@@ -94,6 +96,14 @@ func (s *server) clientSlug(w http.ResponseWriter, r *http.Request, typed string
 		return "", false
 	}
 	return u.Code + "-" + name, true
+}
+
+// lockCreating holds the account's creation lock; call the result to release it.
+func (s *server) lockCreating(id int64) func() {
+	m, _ := s.creating.LoadOrStore(id, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // hasRoomForDatabase enforces MAX_DATABASES_PER_CLIENT.

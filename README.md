@@ -93,7 +93,7 @@ Entra a tu panel con el usuario y contraseña que mostró el setup (también est
 - **Administradores**: administradores y usuarios son la misma cuenta. Escribe el nombre, correo o código de un usuario, elígelo de la lista y dale el rol de *Administrador* (todo, menos tocar al propietario o la expiración) o *Lector* (solo ve). Quitarle el rol lo devuelve a usuario normal. El propietario viene de `.env` y nadie puede cambiarlo ni quitarlo.
 - **Actividad**: tu propia actividad, y la de toda la plataforma en la otra pestaña. En *Usuarios* y *Administradores* puedes ver la actividad de cada persona.
 
-> Si actualizas desde una versión con administradores aparte, se convierten en cuentas con ese rol (un administrador con el mismo nombre de usuario que un usuario pasa a ser esa misma cuenta) y las sesiones de administrador abiertas deben entrar otra vez. La tabla vieja queda guardada como `admins_migrated`.
+> Si actualizas desde una versión con administradores aparte, se convierten en cuentas con ese rol (un administrador con el mismo nombre de usuario que un usuario pasa a ser esa misma cuenta) y las sesiones de administrador abiertas deben entrar otra vez. La tabla vieja queda guardada como `admins_migrated`. Cambiar o restablecer una contraseña cierra las demás sesiones abiertas de esa cuenta. Cada cuenta puede abrir hasta 5 conexiones por base de datos.
 
 ## 4. Usar PosternDB (quien se registra)
 

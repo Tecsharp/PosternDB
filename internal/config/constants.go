@@ -131,8 +131,10 @@ const (
 	PreviewRowLimit  = 50
 	DataPageSize     = 50
 	MaxDataPageSize  = 200
-	MaxQueryLength   = 20000
-	MaxTemplateSQL   = 200000
+	// MaxDataPage keeps (page-1)*size far from overflowing into a negative OFFSET.
+	MaxDataPage    = 100_000
+	MaxQueryLength = 20000
+	MaxTemplateSQL = 200000
 	// MaxConnectionQueryChars truncates the running statement shown in the live connections list.
 	MaxConnectionQueryChars = 160
 	// MaxClientBackupsPerDatabase caps manual backups a registered user can
@@ -170,7 +172,6 @@ const (
 	ActionDBDropped             = "db_dropped"
 	ActionRouteCreated          = "route_created"
 	ActionRouteRemoved          = "route_removed"
-	ActionActivitySeen          = "activity_detected"
 	ActionAuditRun              = "inactivity_audit_run"
 	ActionLoginSuccess          = "login_success"
 	ActionLoginFailed           = "login_failed"
@@ -222,7 +223,10 @@ const (
 	ArchivedDBPrefix    = "pdbarch_"
 	ArchiveTimeLayout   = "20060102150405"
 	GeneratedPasswordLn = 32
-	ClientConnLimit     = 20
+	// ClientConnLimit caps connections per client role. Postgres allows 200 in
+	// total (docker-compose.yml) and each account may own several databases, so
+	// a handful of accounts must not be able to use every slot.
+	ClientConnLimit = 5
 )
 
 // HTTP routes.
@@ -328,6 +332,8 @@ const (
 	MaxJSONBodyBytes    = 1 << 16
 	ShutdownTimeout     = 15 * time.Second
 	ReadHeaderTimeout   = 10 * time.Second
+	ReadTimeout         = 30 * time.Second
+	IdleTimeout         = 2 * time.Minute
 	ExternalCallTimeout = 30 * time.Second
 	AuditLogPageSize    = 100
 )

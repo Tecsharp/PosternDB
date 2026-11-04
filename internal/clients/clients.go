@@ -58,7 +58,7 @@ var (
 
 // Store is the persistence the service needs.
 type Store interface {
-	ListClientUsers(ctx context.Context) ([]model.ClientUser, error)
+	ListStaffUsers(ctx context.Context) ([]model.ClientUser, error)
 	GetClientUser(ctx context.Context, id int64) (model.ClientUser, error)
 	GetClientUserByUsername(ctx context.Context, username string) (model.ClientUser, error)
 	GetClientUserByEmail(ctx context.Context, email string) (model.ClientUser, error)
@@ -70,9 +70,9 @@ type Store interface {
 	SetClientRole(ctx context.Context, id int64, role string) (model.ClientUser, error)
 	UpdateClientUserPassword(ctx context.Context, id int64, hash string) error
 	TouchClientUserLogin(ctx context.Context, id int64, at time.Time) error
-	SetClientUserExpiry(ctx context.Context, id int64, never bool, maxIdleDays *int, actor string) (model.ClientUser, error)
 	DeleteClientUser(ctx context.Context, id int64) error
 	RecordAudit(ctx context.Context, e model.AuditEntry) error
+	RenameAuditIdentity(ctx context.Context, from, to string) error
 }
 
 // Passwords generates random passwords for owner-created accounts.
@@ -203,6 +203,10 @@ func (s *Service) Create(ctx context.Context, email, fullName, actor string) (mo
 	s.audit(ctx, actor, config.ActionClientCreated, clean, nil)
 	return u, password, nil
 }
+
+// deletedSuffix marks the history of a deleted account. Neither a username nor
+// an email can contain it, so nobody can register a name that matches.
+const deletedSuffix = " (eliminada)"
 
 const codeAttempts = 5
 
@@ -372,6 +376,12 @@ func (s *Service) SetUsername(ctx context.Context, id int64, raw string) (model.
 	if err != nil {
 		return u, err
 	}
+	// Past entries follow the person to the new name; an email keeps matching
+	// them by itself. Either way the old name is free for someone else
+	// without inheriting this history.
+	if old.Username != old.Email {
+		_ = s.store.RenameAuditIdentity(ctx, old.Username, name)
+	}
 	s.audit(ctx, name, config.ActionClientUsernameChanged, name, map[string]any{"from": old.Username})
 	return u, nil
 }
@@ -384,17 +394,7 @@ func ValidRole(role string) bool {
 
 // Staff returns the accounts that can open the admin panel.
 func (s *Service) Staff(ctx context.Context) ([]model.ClientUser, error) {
-	all, err := s.store.ListClientUsers(ctx)
-	if err != nil {
-		return nil, err
-	}
-	staff := make([]model.ClientUser, 0, len(all))
-	for _, u := range all {
-		if u.Role == config.RoleAdmin || u.Role == config.RoleViewer {
-			staff = append(staff, u)
-		}
-	}
-	return staff, nil
+	return s.store.ListStaffUsers(ctx)
 }
 
 // SetRole gives an account a role: admin and viewer open the admin panel, user
@@ -448,21 +448,6 @@ func (s *Service) ByID(ctx context.Context, id int64) (model.ClientUser, bool, e
 		return model.ClientUser{}, false, nil
 	}
 	return u, err == nil, err
-}
-
-// List returns every registered client, for the owner-only Usuarios page.
-func (s *Service) List(ctx context.Context) ([]model.ClientUser, error) {
-	return s.store.ListClientUsers(ctx)
-}
-
-// SetExpiry stores the owner's exception for this client.
-func (s *Service) SetExpiry(ctx context.Context, id int64, never bool, maxIdleDays *int, actor string) (model.ClientUser, error) {
-	saved, err := s.store.SetClientUserExpiry(ctx, id, never, maxIdleDays, actor)
-	if err != nil {
-		return saved, err
-	}
-	s.audit(ctx, actor, config.ActionClientExpiryChanged, saved.Username, map[string]any{"neverExpires": never, "maxIdleDays": maxIdleDays})
-	return saved, nil
 }
 
 // ChangeOwnPassword lets a client pick a new password. An account that only
@@ -524,7 +509,14 @@ func (s *Service) Delete(ctx context.Context, id int64, actor string) error {
 	if err := s.store.DeleteClientUser(ctx, id); err != nil {
 		return err
 	}
-	s.audit(ctx, actor, config.ActionClientDeleted, u.Username, nil)
+	// Whoever registers the same email or username later must not inherit
+	// this person's history.
+	for _, name := range []string{u.Username, u.Email} {
+		if name != "" {
+			_ = s.store.RenameAuditIdentity(ctx, name, name+deletedSuffix)
+		}
+	}
+	s.audit(ctx, actor, config.ActionClientDeleted, u.Username+deletedSuffix, nil)
 	return nil
 }
 
