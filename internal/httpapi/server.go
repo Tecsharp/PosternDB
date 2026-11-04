@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -149,6 +150,9 @@ type Deps struct {
 
 type server struct {
 	Deps
+	// creating serializes "check the limit, then create" per account, so
+	// parallel requests cannot go past MAX_DATABASES_PER_CLIENT.
+	creating sync.Map
 }
 
 // NewRouter builds the HTTP handler tree. Every protected route declares

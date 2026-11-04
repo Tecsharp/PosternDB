@@ -188,6 +188,8 @@ func (s *server) restoreMyBackup(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	id := clientID(r)
+	defer s.lockCreating(id)()
 	if !s.hasRoomForDatabase(w, r) {
 		return
 	}
@@ -195,7 +197,6 @@ func (s *server) restoreMyBackup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	id := clientID(r)
 	creds, err := s.Databases.Create(r.Context(), provision.CreateRequest{Name: slug, RestoreBackupID: job.ID, ClientUserID: &id}, actor(r))
 	s.secret(w, http.StatusCreated, "restore my backup", creds, err)
 }
@@ -282,11 +283,6 @@ func (s *server) clientActivityFor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.activityOf(w, r, []string{u.Username, u.Email}, slugs, false)
-}
-
-// clientActivity is personActivity as a registered user sees it.
-func clientActivity(entries []model.AuditEntry, identities, slugs []string) []model.AuditEntry {
-	return personActivity(entries, identities, slugs, true)
 }
 
 // personActivity keeps the entries that concern one person: their own actions

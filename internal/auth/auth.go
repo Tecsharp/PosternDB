@@ -196,6 +196,12 @@ func (a *Authenticator) IssueFor(subject string, ttl time.Duration) (string, tim
 // Verify parses a token and returns its subject. The signing method is
 // pinned to HS256 to block "alg: none" and algorithm-confusion attacks.
 func (a *Authenticator) Verify(token string) (string, error) {
+	subject, _, err := a.verifyIssued(token)
+	return subject, err
+}
+
+// verifyIssued is Verify that also returns when the token was issued.
+func (a *Authenticator) verifyIssued(token string) (string, time.Time, error) {
 	claims := &jwt.RegisteredClaims{}
 	_, err := jwt.ParseWithClaims(token, claims, func(*jwt.Token) (any, error) { return a.secret, nil },
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
@@ -203,10 +209,10 @@ func (a *Authenticator) Verify(token string) (string, error) {
 		jwt.WithExpirationRequired(),
 		jwt.WithTimeFunc(a.now),
 	)
-	if err != nil || claims.Subject == "" {
-		return "", ErrInvalidSession
+	if err != nil || claims.Subject == "" || claims.IssuedAt == nil {
+		return "", time.Time{}, ErrInvalidSession
 	}
-	return claims.Subject, nil
+	return claims.Subject, claims.IssuedAt.Time, nil
 }
 
 // SetSessionCookie writes the session cookie. HttpOnly keeps it away from
@@ -252,14 +258,14 @@ func (a *Authenticator) identify(r *http.Request) (Identity, error) {
 	if err != nil {
 		return Identity{}, ErrInvalidSession
 	}
-	subject, err := a.Verify(cookie.Value)
+	subject, issued, err := a.verifyIssued(cookie.Value)
 	if err != nil {
 		return Identity{}, err
 	}
 	// Account subjects are checked first and never fall through to the owner
 	// lookup below, whatever name the account chose.
 	if raw, isAccount := strings.CutPrefix(subject, clientSubjectPrefix); isAccount {
-		return a.identifyAccount(r.Context(), raw)
+		return a.identifyAccount(r.Context(), raw, issued)
 	}
 	if a.IsBootstrap(subject) {
 		return Identity{Username: subject, Role: config.RoleOwner}, nil
@@ -267,15 +273,17 @@ func (a *Authenticator) identify(r *http.Request) (Identity, error) {
 	return Identity{}, ErrInvalidSession
 }
 
-// identifyAccount re-reads the account on every request, so a role change or a
-// deletion takes effect immediately.
-func (a *Authenticator) identifyAccount(ctx context.Context, raw string) (Identity, error) {
+// identifyAccount re-reads the account on every request, so a role change, a
+// deletion or a new password takes effect immediately.
+func (a *Authenticator) identifyAccount(ctx context.Context, raw string, issued time.Time) (Identity, error) {
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || a.accounts == nil {
 		return Identity{}, ErrInvalidSession
 	}
 	u, ok, err := a.accounts.ByID(ctx, id)
-	if err != nil || !ok {
+	// Tokens carry whole seconds, so compare at that precision: a session
+	// opened right after the password change must not be refused.
+	if err != nil || !ok || issued.Before(u.SessionsValidFrom.Truncate(time.Second)) {
 		return Identity{}, ErrInvalidSession
 	}
 	return AccountIdentity(u), nil

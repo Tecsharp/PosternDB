@@ -38,6 +38,26 @@ func (c *Cluster) Harden(ctx context.Context, platformDB string) error {
 			return fmt.Errorf("harden %s: %w", db, err)
 		}
 	}
+	return c.limitClientRoles(ctx)
+}
+
+// limitClientRoles lowers the connection limit of client roles created with an
+// older, higher one. Idempotent.
+func (c *Cluster) limitClientRoles(ctx context.Context) error {
+	rows, err := c.pool.Query(ctx, "SELECT rolname FROM pg_roles WHERE starts_with(rolname, $1) AND rolconnlimit <> $2",
+		config.ClientDBPrefix, config.ClientConnLimit)
+	if err != nil {
+		return err
+	}
+	roles, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, role := range roles {
+		if _, err := c.pool.Exec(ctx, fmt.Sprintf("ALTER ROLE %s CONNECTION LIMIT %d", ident(role), config.ClientConnLimit)); err != nil {
+			return fmt.Errorf("limit %s: %w", role, err)
+		}
+	}
 	return nil
 }
 

@@ -17,6 +17,10 @@ services:
       - password_encryption=scram-sha-256
       - -c
       - log_connections=on
+      # Client roles are limited to a few connections each (see ClientConnLimit);
+      # this leaves room for many accounts plus the panel and the backup runner.
+      - -c
+      - max_connections=200
     # SECURITY: no "ports:" section on purpose. 5432 is reachable only on the
     # internal Docker network (by the app, the backup sidecar and cloudflared).
     volumes:
@@ -56,7 +60,7 @@ services:
       retries: 5
 
   tunnel:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.10.7
     restart: unless-stopped
     # The token is read from the environment, never passed on the command
     # line, so it does not show up in `docker ps` or process listings.

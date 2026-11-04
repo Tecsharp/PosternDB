@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -748,7 +750,13 @@ func TestDataEditorEndpoints(t *testing.T) {
 
 	d := decode[model.TableData](t, e.owner(t, http.MethodGet, base+"?page=2&sort=id&dir=desc", ""))
 	assert.Equal(t, int64(1), d.Total)
-	assert.Equal(t, "browse public.orders page=2 size=50 sort=id desc=true", e.insp.Queries[len(e.insp.Queries)-1])
+	assert.Equal(t, "browse public.orders page=2 size=50 sort=id desc=true total=count", e.insp.Queries[len(e.insp.Queries)-1])
+
+	// The panel sends the total it already has, so later pages are not counted again.
+	e.owner(t, http.MethodGet, base+"?page=3&total=1234", "")
+	assert.Equal(t, "browse public.orders page=3 size=50 sort= desc=false total=1234", e.insp.Queries[len(e.insp.Queries)-1])
+	e.owner(t, http.MethodGet, base+"?page=3&total=-5", "")
+	assert.Equal(t, "browse public.orders page=3 size=50 sort= desc=false total=count", e.insp.Queries[len(e.insp.Queries)-1], "nonsense totals are ignored")
 
 	assert.Equal(t, http.StatusNoContent, e.owner(t, http.MethodPost, base, `{"values":{"name":"Ana","note":null}}`).Code)
 	assert.Equal(t, http.StatusNoContent, e.owner(t, http.MethodPatch, base, `{"key":{"id":"1"},"values":{"name":"Bea"}}`).Code)
@@ -790,4 +798,39 @@ func TestActivityIsPerPerson(t *testing.T) {
 	}
 	assert.Equal(t, http.StatusForbidden, e.do(t, http.MethodGet, "/api/clients/"+itoa(ana.ID)+"/activity", req{as: "ana"}).Code, "plain users cannot read others' feeds")
 	assert.Equal(t, http.StatusNotFound, e.owner(t, http.MethodGet, "/api/clients/9999/activity", "").Code)
+}
+
+// Parallel requests must not get past MAX_DATABASES_PER_CLIENT: the limit is
+// checked and the database created under one lock per account.
+func TestParallelCreatesRespectTheDatabaseLimit(t *testing.T) {
+	e := newEnv(t, nil)
+	e.addClient(t, "ana")
+	e.cluster.Delay = 30 * time.Millisecond
+	var created atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := e.do(t, http.MethodPost, "/api/me/databases", req{as: "ana@example.com", body: `{"name":"base` + itoa(int64(i)) + `"}`})
+			if rec.Code == http.StatusCreated {
+				created.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+	assert.EqualValues(t, 3, created.Load(), "MAX_DATABASES_PER_CLIENT is 3 in the test environment")
+}
+
+func TestOwnPasswordChangeKeepsTheBrowserSignedIn(t *testing.T) {
+	e := newEnv(t, nil)
+	rec := e.do(t, http.MethodPost, "/api/auth/password", req{body: `{"current":"` + accountPass + `","next":"a-brand-new-password"}`, as: operator})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	var fresh *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == config.SessionCookieName {
+			fresh = c
+		}
+	}
+	require.NotNil(t, fresh, "the response carries a new session, since the change ended the old ones")
 }

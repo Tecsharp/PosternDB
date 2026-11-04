@@ -85,9 +85,9 @@ func loadTableMeta(ctx context.Context, tx pgx.Tx, schema, table string) (tableM
 }
 
 // Browse returns one page of rows ordered by sortColumn (or the primary key).
-func (i *Inspector) Browse(ctx context.Context, database, owner, schema, table string, page, size int, sortColumn string, desc bool) (model.TableData, error) {
+func (i *Inspector) Browse(ctx context.Context, database, owner, schema, table string, page, size int, sortColumn string, desc bool, knownTotal *int64) (model.TableData, error) {
 	size = clamp(size, 1, config.MaxDataPageSize)
-	page = max(page, 1)
+	page = clamp(page, 1, config.MaxDataPage)
 	var out model.TableData
 	err := i.asOwner(ctx, database, owner, true, func(tx pgx.Tx) error {
 		meta, err := loadTableMeta(ctx, tx, schema, table)
@@ -123,6 +123,10 @@ func (i *Inspector) Browse(ctx context.Context, database, owner, schema, table s
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			return err
+		}
+		if knownTotal != nil {
+			out.Total = *knownTotal
+			return nil
 		}
 		return tx.QueryRow(ctx, "SELECT count(*) FROM "+qualified(schema, table)).Scan(&out.Total)
 	})

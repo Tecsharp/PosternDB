@@ -210,9 +210,6 @@ func (a *Auditor) refreshActivity(ctx context.Context, db model.ClientDatabase, 
 	if err := a.meta.RecordActivity(ctx, db.ID, now, act.Sessions, db.InternalSessions); err != nil {
 		return false, err
 	}
-	a.life.RecordAudit(ctx, config.ActorAuditor, config.ActionActivitySeen, db.Slug, map[string]any{
-		"openConnections": act.Connections, "newSessions": fresh,
-	})
 	return true, nil
 }
 

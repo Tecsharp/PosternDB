@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -325,7 +326,7 @@ func TestDataEditor(t *testing.T) {
 		ALTER TABLE customers ADD COLUMN upper_name text GENERATED ALWAYS AS (upper(name)) STORED;`))
 	db, owner := "pdb_it_data", "pdb_it_data"
 
-	page, err := insp.Browse(ctx, db, owner, "public", "customers", 1, 50, "", false)
+	page, err := insp.Browse(ctx, db, owner, "public", "customers", 1, 50, "", false, nil)
 	require.NoError(t, err)
 	assert.True(t, page.Editable)
 	assert.Equal(t, int64(2), page.Total)
@@ -333,10 +334,16 @@ func TestDataEditor(t *testing.T) {
 	assert.True(t, page.Columns[0].PrimaryKey)
 	assert.True(t, page.Columns[2].Generated)
 
-	sorted, err := insp.Browse(ctx, db, owner, "public", "customers", 1, 1, "name", true)
+	sorted, err := insp.Browse(ctx, db, owner, "public", "customers", 1, 1, "name", true, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "Bruno", *sorted.Rows[0][1])
 	assert.Len(t, sorted.Rows, 1, "page size applied")
+	assert.Equal(t, int64(2), sorted.Total, "counted when the caller does not know the total")
+
+	known := int64(777)
+	trusted, err := insp.Browse(ctx, db, owner, "public", "customers", 1, 1, "", false, &known)
+	require.NoError(t, err)
+	assert.Equal(t, int64(777), trusted.Total, "a known total is returned as given, with no count query")
 
 	// Insert with defaults, NULLs and casts from text.
 	require.NoError(t, insp.InsertRow(ctx, db, owner, "public", "customers", model.RowValues{"name": strp("Carla")}))
@@ -362,10 +369,10 @@ func TestDataEditor(t *testing.T) {
 	assert.ErrorIs(t, insp.InsertRow(ctx, db, owner, "public", "nopk", model.RowValues{"v": strp("x")}), ErrReadOnlyTable)
 	assert.ErrorIs(t, insp.InsertRow(ctx, db, owner, "public", "big_orders", model.RowValues{}), ErrReadOnlyTable)
 	assert.ErrorIs(t, insp.InsertRow(ctx, db, owner, "public", "customers", model.RowValues{"upper_name": strp("X")}), ErrGeneratedWrite)
-	nopk, err := insp.Browse(ctx, db, owner, "public", "nopk", 1, 10, "", false)
+	nopk, err := insp.Browse(ctx, db, owner, "public", "nopk", 1, 10, "", false, nil)
 	require.NoError(t, err)
 	assert.False(t, nopk.Editable)
-	_, err = insp.Browse(ctx, db, owner, "public", "ghost", 1, 10, "", false)
+	_, err = insp.Browse(ctx, db, owner, "public", "ghost", 1, 10, "", false, nil)
 	assert.ErrorIs(t, err, ErrTableNotFound)
 }
 
@@ -378,9 +385,9 @@ func TestDataEditorRejectsInjection(t *testing.T) {
 
 	evil := `name = 'x'; DROP TABLE orders; --`
 	assert.ErrorIs(t, insp.UpdateRow(ctx, db, db, "public", "customers", model.RowValues{"id": strp("1")}, model.RowValues{evil: strp("x")}), ErrUnknownColumn)
-	_, err := insp.Browse(ctx, db, db, "public", "customers", 1, 10, "id; DROP TABLE orders", false)
+	_, err := insp.Browse(ctx, db, db, "public", "customers", 1, 10, "id; DROP TABLE orders", false, nil)
 	assert.ErrorIs(t, err, ErrUnknownColumn)
-	_, err = insp.Browse(ctx, db, db, "public", `orders"; DROP TABLE orders; --`, 1, 10, "", false)
+	_, err = insp.Browse(ctx, db, db, "public", `orders"; DROP TABLE orders; --`, 1, 10, "", false, nil)
 	assert.ErrorIs(t, err, ErrTableNotFound)
 	// Values are bind parameters: SQL in a value is stored as text.
 	require.NoError(t, insp.UpdateRow(ctx, db, db, "public", "customers", model.RowValues{"id": strp("1")}, model.RowValues{"name": strp("'); DROP TABLE orders; --")}))
@@ -389,7 +396,7 @@ func TestDataEditorRejectsInjection(t *testing.T) {
 	assert.Equal(t, int64(3), n, "orders still exists")
 
 	// Platform tables are out of reach: the console cannot even connect there.
-	_, err = insp.Browse(ctx, platformDB, db, "public", "admins", 1, 10, "", false)
+	_, err = insp.Browse(ctx, platformDB, db, "public", "admins", 1, 10, "", false, nil)
 	assert.Error(t, err)
 }
 
@@ -434,6 +441,7 @@ func TestMigration010FoldsAdminsIntoAccounts(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		exec("DELETE FROM client_users WHERE username LIKE 'mig010-%'")
+		exec("DELETE FROM audit_log WHERE actor = 'migration-010'")
 		exec("DROP TABLE IF EXISTS admins")
 	})
 
@@ -462,6 +470,12 @@ func TestMigration010FoldsAdminsIntoAccounts(t *testing.T) {
 		"mig010-boss": {"admin", "boss-hash"},  // a stored owner is an admin; the owner lives in .env
 		"mig010-gone": {"admin", "gone-hash"},  // Google-only account gets a usable password
 	}, got)
+	var merged []string
+	auditRows, err := pool.Query(ctx, "SELECT target FROM audit_log WHERE actor = 'migration-010' AND action = 'role_changed' ORDER BY target")
+	require.NoError(t, err)
+	merged, err = pgx.CollectRows(auditRows, pgx.RowTo[string])
+	require.NoError(t, err)
+	assert.Equal(t, []string{"mig010-gone", "mig010-same"}, merged, "only the merged names leave a trace; accounts created from scratch do not")
 	var moved bool
 	require.NoError(t, pool.QueryRow(ctx, "SELECT to_regclass('admins_migrated') IS NOT NULL AND to_regclass('admins') IS NULL").Scan(&moved))
 	assert.True(t, moved, "the old table is kept under another name")
@@ -482,4 +496,87 @@ func TestSetClientRole(t *testing.T) {
 	assert.Error(t, err, "the database refuses a role it does not know")
 	_, err = m.SetClientRole(ctx, 987654321, "admin")
 	assert.ErrorIs(t, err, model.ErrNotFound)
+}
+
+func TestAccountListsCountDatabasesInOneQuery(t *testing.T) {
+	ctx := context.Background()
+	m := NewMetadata(pool)
+	ana, err := m.CreateClientUser(ctx, model.NewClientUser{Username: "list-ana", PasswordHash: "h"})
+	require.NoError(t, err)
+	bea, err := m.CreateClientUser(ctx, model.NewClientUser{Username: "list-bea", PasswordHash: "h", Role: "viewer"})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = m.DeleteClientUser(ctx, ana.ID)
+		_ = m.DeleteClientUser(ctx, bea.ID)
+	})
+	_, err = pool.Exec(ctx, `INSERT INTO client_databases (slug, db_name, role_name, hostname, client_user_id, state)
+		VALUES ('list-a1','pdb_list_a1','pdb_list_a1','list-a1.test',$1,'active'), ('list-a2','pdb_list_a2','pdb_list_a2','list-a2.test',$1,'deleted')`, ana.ID)
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM client_databases WHERE slug LIKE 'list-a%'") })
+
+	all, err := m.ListClientUsers(ctx)
+	require.NoError(t, err)
+	counts := map[string]int{}
+	for _, u := range all {
+		counts[u.Username] = u.DatabaseCount
+	}
+	assert.Equal(t, 1, counts["list-ana"], "deleted databases do not count")
+	assert.Equal(t, 0, counts["list-bea"])
+
+	staff, err := m.ListStaffUsers(ctx)
+	require.NoError(t, err)
+	var names []string
+	for _, u := range staff {
+		names = append(names, u.Username)
+	}
+	assert.Contains(t, names, "list-bea")
+	assert.NotContains(t, names, "list-ana", "plain users are not staff")
+}
+
+func TestPasswordChangeMovesSessionsValidFrom(t *testing.T) {
+	ctx := context.Background()
+	m := NewMetadata(pool)
+	u, err := m.CreateClientUser(ctx, model.NewClientUser{Username: "sess-it", PasswordHash: "h"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.DeleteClientUser(ctx, u.ID) })
+	assert.True(t, u.SessionsValidFrom.Before(time.Now().AddDate(-1, 0, 0)), "new accounts accept every session")
+
+	require.NoError(t, m.UpdateClientUserPassword(ctx, u.ID, "h2"))
+	got, err := m.GetClientUser(ctx, u.ID)
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now(), got.SessionsValidFrom, time.Minute)
+}
+
+func TestRenameAuditIdentity(t *testing.T) {
+	ctx := context.Background()
+	m := NewMetadata(pool)
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM audit_log WHERE actor LIKE 'rn-%' OR target LIKE 'rn-%'") })
+	require.NoError(t, m.RecordAudit(ctx, model.AuditEntry{Actor: "rn-old", Action: "login_success"}))
+	require.NoError(t, m.RecordAudit(ctx, model.AuditEntry{Actor: "rn-admin", Action: "role_changed", Target: "rn-old"}))
+	require.NoError(t, m.RecordAudit(ctx, model.AuditEntry{Actor: "rn-other", Action: "login_success"}))
+
+	require.NoError(t, m.RenameAuditIdentity(ctx, "rn-old", "rn-new"))
+	entries, err := m.ListAudit(ctx, 50)
+	require.NoError(t, err)
+	seen := map[string]bool{}
+	for _, e := range entries {
+		seen[e.Actor+">"+e.Target] = true
+	}
+	assert.True(t, seen["rn-new>"])
+	assert.True(t, seen["rn-admin>rn-new"])
+	assert.True(t, seen["rn-other>"], "other people's entries stay")
+	assert.False(t, seen["rn-old>"])
+}
+
+func TestHardenLowersTheConnectionLimitOfOlderClientRoles(t *testing.T) {
+	ctx := context.Background()
+	c := NewCluster(pool)
+	_, err := pool.Exec(ctx, `CREATE ROLE pdb_oldlimit NOLOGIN CONNECTION LIMIT 20`)
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DROP ROLE IF EXISTS pdb_oldlimit") })
+
+	require.NoError(t, c.Harden(ctx, platformDB))
+	var limit int
+	require.NoError(t, pool.QueryRow(ctx, "SELECT rolconnlimit FROM pg_roles WHERE rolname = 'pdb_oldlimit'").Scan(&limit))
+	assert.Equal(t, config.ClientConnLimit, limit)
 }
