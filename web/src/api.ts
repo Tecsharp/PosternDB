@@ -349,10 +349,11 @@ export const api = {
     request<{ rows: number }>('GET', `${db(slug)}/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/count`).then(
       (r) => r.rows,
     ),
-  tableData: (slug: string, schema: string, table: string, page: number, sort?: string, desc?: boolean) =>
+  // knownTotal skips the server's row count (a full table scan) when it is already known.
+  tableData: (slug: string, schema: string, table: string, page: number, sort?: string, desc?: boolean, knownTotal?: number) =>
     request<TableData>(
       'GET',
-      `${tablePath(slug, schema, table)}/data?page=${page}&size=50${sort ? `&sort=${encodeURIComponent(sort)}&dir=${desc ? 'desc' : 'asc'}` : ''}`,
+      `${tablePath(slug, schema, table)}/data?page=${page}&size=50${sort ? `&sort=${encodeURIComponent(sort)}&dir=${desc ? 'desc' : 'asc'}` : ''}${knownTotal === undefined ? '' : `&total=${knownTotal}`}`,
     ),
   insertRow: (slug: string, schema: string, table: string, values: RowValues) =>
     request<void>('POST', `${tablePath(slug, schema, table)}/data`, { values }),
@@ -424,10 +425,10 @@ export const me = {
   schema: (slug: string) => request<Schema>('GET', `${myDb(slug)}/schema`),
   count: (slug: string, schema: string, table: string) =>
     request<{ rows: number }>('GET', `${myTablePath(slug, schema, table)}/count`).then((r) => r.rows),
-  tableData: (slug: string, schema: string, table: string, page: number, sort?: string, desc?: boolean) =>
+  tableData: (slug: string, schema: string, table: string, page: number, sort?: string, desc?: boolean, knownTotal?: number) =>
     request<TableData>(
       'GET',
-      `${myTablePath(slug, schema, table)}/data?page=${page}&size=50${sort ? `&sort=${encodeURIComponent(sort)}&dir=${desc ? 'desc' : 'asc'}` : ''}`,
+      `${myTablePath(slug, schema, table)}/data?page=${page}&size=50${sort ? `&sort=${encodeURIComponent(sort)}&dir=${desc ? 'desc' : 'asc'}` : ''}${knownTotal === undefined ? '' : `&total=${knownTotal}`}`,
     ),
   insertRow: (slug: string, schema: string, table: string, values: RowValues) =>
     request<void>('POST', `${myTablePath(slug, schema, table)}/data`, { values }),

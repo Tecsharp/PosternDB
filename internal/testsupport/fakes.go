@@ -79,12 +79,15 @@ type FakeCluster struct {
 	Activity      map[string]model.Activity
 	Stats         model.DatabaseStats
 	FailRole      bool
-	FailDB        bool
-	FailDrop      bool
-	FailArchive   bool
-	FailStats     bool
-	FailGrant     bool
-	FailPassword  bool
+	// Delay makes CreateRole slow, so tests can overlap requests that a real
+	// cluster would also overlap.
+	Delay        time.Duration
+	FailDB       bool
+	FailDrop     bool
+	FailArchive  bool
+	FailStats    bool
+	FailGrant    bool
+	FailPassword bool
 }
 
 // NewFakeCluster returns an empty fake cluster.
@@ -107,6 +110,7 @@ func (c *FakeCluster) locked(fail bool, fn func()) error {
 
 // CreateRole adds a role.
 func (c *FakeCluster) CreateRole(_ context.Context, role, verifier string) error {
+	time.Sleep(c.Delay)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.FailRole {
@@ -287,10 +291,14 @@ func (f *FakeInspector) DropUserObjects(_ context.Context, _, _, user string) er
 }
 
 // Browse returns the configured page.
-func (f *FakeInspector) Browse(_ context.Context, _, _, schema, table string, page, size int, sort string, desc bool) (model.TableData, error) {
+func (f *FakeInspector) Browse(_ context.Context, _, _, schema, table string, page, size int, sort string, desc bool, knownTotal *int64) (model.TableData, error) {
 	var d model.TableData
 	err := f.locked(f.FailRead, func() {
-		f.Queries = append(f.Queries, fmt.Sprintf("browse %s.%s page=%d size=%d sort=%s desc=%t", schema, table, page, size, sort, desc))
+		known := "count"
+		if knownTotal != nil {
+			known = fmt.Sprint(*knownTotal)
+		}
+		f.Queries = append(f.Queries, fmt.Sprintf("browse %s.%s page=%d size=%d sort=%s desc=%t total=%s", schema, table, page, size, sort, desc, known))
 		d = f.Data
 	})
 	return d, err
@@ -480,6 +488,21 @@ func (m *FakeMetadata) IncrementInternalSessions(_ context.Context, db string) e
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Internal[db]++
+	return nil
+}
+
+// RenameAuditIdentity relabels entries, like the real store.
+func (m *FakeMetadata) RenameAuditIdentity(_ context.Context, from, to string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.Audit {
+		if m.Audit[i].Actor == from {
+			m.Audit[i].Actor = to
+		}
+		if m.Audit[i].Target == from {
+			m.Audit[i].Target = to
+		}
+	}
 	return nil
 }
 
@@ -721,12 +744,37 @@ func (m *FakeMetadata) ListClientUsers(context.Context) ([]model.ClientUser, err
 	if m.FailList {
 		return nil, ErrInjected
 	}
+	return m.clientUsersWhere(func(model.ClientUser) bool { return true }), nil
+}
+
+// ListStaffUsers returns the accounts with an admin or viewer role.
+func (m *FakeMetadata) ListStaffUsers(context.Context) ([]model.ClientUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailList {
+		return nil, ErrInjected
+	}
+	return m.clientUsersWhere(func(u model.ClientUser) bool { return u.Role != config.AccountRoleUser }), nil
+}
+
+// clientUsersWhere lists matching accounts by username, each with its number
+// of databases, like the real queries. The caller holds the lock.
+func (m *FakeMetadata) clientUsersWhere(keep func(model.ClientUser) bool) []model.ClientUser {
 	out := []model.ClientUser{}
 	for _, u := range m.ClientUsers {
-		out = append(out, *u)
+		if !keep(*u) {
+			continue
+		}
+		c := *u
+		for _, db := range m.Rows {
+			if db.ClientUserID != nil && *db.ClientUserID == u.ID && db.State != config.StateDeleted {
+				c.DatabaseCount++
+			}
+		}
+		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
-	return out, nil
+	return out
 }
 
 // GetClientUser finds a client by id.
@@ -879,7 +927,7 @@ func (m *FakeMetadata) clientUser(id int64, fn func(*model.ClientUser)) error {
 
 // UpdateClientUserPassword stores a new password hash.
 func (m *FakeMetadata) UpdateClientUserPassword(_ context.Context, id int64, hash string) error {
-	return m.clientUser(id, func(u *model.ClientUser) { u.PasswordHash = hash })
+	return m.clientUser(id, func(u *model.ClientUser) { u.PasswordHash, u.SessionsValidFrom = hash, time.Now() })
 }
 
 // TouchClientUserLogin records a login.

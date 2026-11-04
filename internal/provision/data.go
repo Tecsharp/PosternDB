@@ -13,6 +13,9 @@ type BrowseRequest struct {
 	Page, Size    int
 	Sort          string
 	Desc          bool
+	// KnownTotal is the row count the caller already has. Counting scans the
+	// whole table, so it is only done when this is nil (first page, or after a change).
+	KnownTotal *int64
 }
 
 // Browse returns one page of rows of a table.
@@ -21,7 +24,7 @@ func (s *Service) Browse(ctx context.Context, slug string, req BrowseRequest) (m
 	if err != nil {
 		return model.TableData{}, err
 	}
-	data, err := s.inspector.Browse(ctx, db.DBName, db.RoleName, req.Schema, req.Table, req.Page, req.Size, req.Sort, req.Desc)
+	data, err := s.inspector.Browse(ctx, db.DBName, db.RoleName, req.Schema, req.Table, req.Page, req.Size, req.Sort, req.Desc, req.KnownTotal)
 	if err != nil {
 		return data, &InvalidInputError{Err: err}
 	}

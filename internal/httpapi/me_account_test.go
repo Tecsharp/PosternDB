@@ -322,7 +322,7 @@ func TestClientActivityShowsOnlyTheirOwnThings(t *testing.T) {
 		{ID: 6, OccurredAt: now.Add(-6 * time.Hour), Actor: config.ActorSystem, Action: "login_failed", Target: ""},
 		{ID: 7, OccurredAt: now.Add(-7 * time.Hour), Actor: "root", Action: "db_deleted", Target: "ajena"},
 	}
-	got := clientActivity(entries, []string{"ana@example.com", "ana.lopez"}, []string{"mia"})
+	got := personActivity(entries, []string{"ana@example.com", "ana.lopez"}, []string{"mia"}, true)
 
 	var ids []int64
 	for _, e := range got {

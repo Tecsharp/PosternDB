@@ -23,8 +23,12 @@ func (s *server) browse(w http.ResponseWriter, r *http.Request) {
 	if size == 0 {
 		size = config.DataPageSize
 	}
+	var known *int64
+	if n, err := strconv.ParseInt(q.Get("total"), 10, 64); err == nil && n >= 0 {
+		known = &n
+	}
 	data, err := s.Databases.Browse(r.Context(), urlSlug(r), provision.BrowseRequest{
-		Schema: schema, Table: table, Page: page, Size: size, Sort: q.Get("sort"), Desc: q.Get("dir") == "desc",
+		Schema: schema, Table: table, Page: page, Size: size, Sort: q.Get("sort"), Desc: q.Get("dir") == "desc", KnownTotal: known,
 	})
 	s.respond(w, "browse table", data, err)
 }

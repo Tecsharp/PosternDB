@@ -112,7 +112,17 @@ function keyOf(data: TableData, row: (string | null)[]): RowValues {
 function TableEditor({ slug, table }: { slug: string; table: Selected }) {
   const [page, setPage] = useState(1)
   const [sort, setSort] = useState<{ col: string; desc: boolean } | null>(null)
-  const { data, error, loading, reload } = useLoad(() => api.tableData(slug, table.schema, table.name, page, sort?.col, sort?.desc), [slug, table.schema, table.name, page, sort?.col, sort?.desc])
+  // The row count scans the whole table, so it is asked for once and reused
+  // while paging or sorting; any change to the data asks for it again.
+  const knownTotal = useRef<number | undefined>(undefined)
+  const { data, error, loading, reload: refetch } = useLoad(
+    () => api.tableData(slug, table.schema, table.name, page, sort?.col, sort?.desc, knownTotal.current).then((d) => ((knownTotal.current = d.total), d)),
+    [slug, table.schema, table.name, page, sort?.col, sort?.desc],
+  )
+  const reload = () => {
+    knownTotal.current = undefined
+    refetch()
+  }
   const [editing, setEditing] = useState<{ row: number; col: number } | null>(null)
   const [draft, setDraft] = useState('')
   const [sheet, setSheet] = useState<{ mode: 'insert' } | { mode: 'edit'; row: (string | null)[] } | null>(null)

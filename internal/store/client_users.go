@@ -11,17 +11,35 @@ import (
 
 const clientUserColumns = `id, username, COALESCE(password_hash, ''), never_expires, max_idle_days,
 	created_at, created_by, updated_at, updated_by, last_login_at,
-	COALESCE(email, ''), full_name, COALESCE(google_sub, ''), email_verified_at, needs_username, code, role`
+	COALESCE(email, ''), full_name, COALESCE(google_sub, ''), email_verified_at, needs_username, code, role, sessions_valid_from`
 
-// ListClientUsers returns every registered client, for the owner-only
-// "Usuarios" page. Does not include each one's database count; the caller
-// composes that from ListDatabases/ListByClientUser to avoid an N+1 query.
+// clientUsersCounted is the account list query: every account with how many
+// non-deleted databases it owns, in one round trip.
+const clientUsersCounted = `SELECT ` + clientUserColumns + `,
+	(SELECT count(*) FROM client_databases d WHERE d.client_user_id = client_users.id AND d.state <> 'deleted')
+	FROM client_users `
+
+// ListClientUsers returns every registered client with its database count.
 func (m *Metadata) ListClientUsers(ctx context.Context) ([]model.ClientUser, error) {
-	rows, err := m.pool.Query(ctx, `SELECT `+clientUserColumns+` FROM client_users ORDER BY username`)
+	return m.listClientUsers(ctx, `ORDER BY username`)
+}
+
+// ListStaffUsers returns the accounts that can open the admin panel.
+func (m *Metadata) ListStaffUsers(ctx context.Context) ([]model.ClientUser, error) {
+	return m.listClientUsers(ctx, `WHERE role <> 'user' ORDER BY username`)
+}
+
+func (m *Metadata) listClientUsers(ctx context.Context, tail string) ([]model.ClientUser, error) {
+	rows, err := m.pool.Query(ctx, clientUsersCounted+tail)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.ClientUser, error) { return scanClientUser(r) })
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.ClientUser, error) {
+		var count int
+		u, err := scanClientUser(r, &count)
+		u.DatabaseCount = count
+		return u, err
+	})
 }
 
 // GetClientUser finds one client by id.
@@ -88,9 +106,10 @@ func (m *Metadata) SetClientFullName(ctx context.Context, id int64, fullName str
 		WHERE id = $1 RETURNING `+clientUserColumns, id, fullName))
 }
 
-// UpdateClientUserPassword stores a new password hash.
+// UpdateClientUserPassword stores a new password hash and ends every session
+// issued before now.
 func (m *Metadata) UpdateClientUserPassword(ctx context.Context, id int64, passwordHash string) error {
-	return m.exec(ctx, `UPDATE client_users SET password_hash = $2 WHERE id = $1`, id, passwordHash)
+	return m.exec(ctx, `UPDATE client_users SET password_hash = $2, sessions_valid_from = now() WHERE id = $1`, id, passwordHash)
 }
 
 // TouchClientUserLogin records a successful login.
@@ -112,11 +131,12 @@ func (m *Metadata) DeleteClientUser(ctx context.Context, id int64) error {
 	return m.exec(ctx, `DELETE FROM client_users WHERE id = $1`, id)
 }
 
-func scanClientUser(row pgx.Row) (model.ClientUser, error) {
+// scanClientUser reads clientUserColumns, then any extra columns after them.
+func scanClientUser(row pgx.Row, extra ...any) (model.ClientUser, error) {
 	var u model.ClientUser
-	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.NeverExpires, &u.MaxIdleDays,
+	err := row.Scan(append([]any{&u.ID, &u.Username, &u.PasswordHash, &u.NeverExpires, &u.MaxIdleDays,
 		&u.CreatedAt, &u.CreatedBy, &u.UpdatedAt, &u.UpdatedBy, &u.LastLoginAt,
-		&u.Email, &u.FullName, &u.GoogleSub, &u.EmailVerifiedAt, &u.NeedsUsername, &u.Code, &u.Role)
+		&u.Email, &u.FullName, &u.GoogleSub, &u.EmailVerifiedAt, &u.NeedsUsername, &u.Code, &u.Role, &u.SessionsValidFrom}, extra...)...)
 	u.Derive()
 	return u, translate(err)
 }

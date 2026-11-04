@@ -119,7 +119,19 @@ func (s *server) changeOwnPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "la contraseña del propietario está en el archivo .env")
 		return
 	}
-	s.noContent(w, "change password", s.Clients.ChangeOwnPassword(r.Context(), *id, req.Current, req.Next))
+	if err := s.Clients.ChangeOwnPassword(r.Context(), *id, req.Current, req.Next); err != nil {
+		s.domainError(w, "change password", err)
+		return
+	}
+	// The new password ended every older session, this browser's included:
+	// give it a fresh one so the person stays signed in.
+	token, exp, err := s.Auth.Issue(auth.FromContext(r.Context()).Subject())
+	if err != nil {
+		s.internalError(w, "issue session", err)
+		return
+	}
+	auth.SetSessionCookie(w, token, exp, false, isHTTPS(r))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- administrators ---------------------------------------------------------------

@@ -61,7 +61,7 @@ func TestOpenConnectionRefreshesLastSeen(t *testing.T) {
 	assert.Equal(t, Result{Checked: 1, Active: 1}, res)
 	assert.Equal(t, now, h.meta.Rows[db.ID].LastSeenAt)
 	assert.Equal(t, config.StateActive, h.meta.Rows[db.ID].State, "activity saves it even when overdue")
-	assert.Contains(t, h.meta.Actions(), config.ActionActivitySeen)
+	assert.NotContains(t, h.meta.Actions(), "activity_detected", "one row per database per run would bury the activity feeds")
 }
 
 func TestNewSessionsSinceLastRunCountAsActivity(t *testing.T) {

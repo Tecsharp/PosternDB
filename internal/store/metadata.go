@@ -132,6 +132,16 @@ func (m *Metadata) RecordAudit(ctx context.Context, e model.AuditEntry) error {
 	return err
 }
 
+// RenameAuditIdentity relabels every entry whose actor or target is from, so a
+// name that someone gives up (or an account that is deleted) is never matched
+// to whoever takes it next.
+func (m *Metadata) RenameAuditIdentity(ctx context.Context, from, to string) error {
+	return m.exec(ctx, `UPDATE audit_log SET
+		actor = CASE WHEN actor = $1 THEN $2 ELSE actor END,
+		target = CASE WHEN target = $1 THEN $2 ELSE target END
+		WHERE actor = $1 OR target = $1`, from, to)
+}
+
 // ListAudit returns the most recent audit entries.
 func (m *Metadata) ListAudit(ctx context.Context, limit int) ([]model.AuditEntry, error) {
 	rows, err := m.pool.Query(ctx, `SELECT id, occurred_at, actor, action, target, details

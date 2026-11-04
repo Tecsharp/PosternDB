@@ -207,7 +207,8 @@ func serve(ctx context.Context, cfg *config.Config, app *application, logger *sl
 		Static:    web.Dist(),
 		Logger:    logger,
 	})
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: handler, ReadHeaderTimeout: config.ReadHeaderTimeout}
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: handler, ReadHeaderTimeout: config.ReadHeaderTimeout,
+		ReadTimeout: config.ReadTimeout, IdleTimeout: config.IdleTimeout} // no WriteTimeout: backups download as one long response
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	logger.Info("posterndb listening", "addr", cfg.HTTPAddr, "panel", cfg.PanelHostname, "localMode", cfg.LocalMode, "tunnel", cfg.Tunnel.String())

@@ -269,6 +269,9 @@ type ClientUser struct {
 	// NeedsUsername is set for accounts created with Google until the person
 	// picks a username.
 	NeedsUsername bool `json:"needsUsername"`
+	// SessionsValidFrom: sessions issued before it are refused (set when the
+	// password changes).
+	SessionsValidFrom time.Time `json:"-"`
 	// Derived from the sensitive fields above by Derive; safe to serialise.
 	GoogleLinked bool `json:"googleLinked"`
 	HasPassword  bool `json:"hasPassword"`

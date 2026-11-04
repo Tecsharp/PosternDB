@@ -19,6 +19,8 @@ type fakeAccount struct {
 	id       int64
 	password string
 	role     string
+	// validFrom is when the password last changed.
+	validFrom time.Time
 }
 
 // fakeAccounts is an in-memory account store; the role is read on every call,
@@ -33,7 +35,7 @@ func (f fakeAccounts) user(name string, a *fakeAccount) model.ClientUser {
 	if role == "" {
 		role = config.AccountRoleUser
 	}
-	return model.ClientUser{ID: a.id, Username: name, Role: role}
+	return model.ClientUser{ID: a.id, Username: name, Role: role, SessionsValidFrom: a.validFrom}
 }
 
 func (f fakeAccounts) Authenticate(_ context.Context, u, p string) (model.ClientUser, bool, error) {
@@ -260,4 +262,29 @@ func TestAllowsAndRequireRole(t *testing.T) {
 		assert.Equal(t, want, rec.Code, role)
 	}
 	assert.True(t, newAuth().IsBootstrap("admin"))
+}
+
+func TestAPasswordChangeEndsOlderSessions(t *testing.T) {
+	store := accounts()
+	a := New("root", "p", secret, time.Hour, store)
+	t0 := time.Date(2026, 11, 4, 10, 0, 0, 500_000_000, time.UTC)
+	a.now = func() time.Time { return t0 }
+	subject := AccountIdentity(store.user("bea", store.users["bea"])).Subject()
+
+	_, code := call(a, subject)
+	assert.Equal(t, http.StatusOK, code, "no password change yet")
+
+	store.users["bea"].validFrom = t0.Add(10 * time.Second)
+	_, code = call(a, subject)
+	assert.Equal(t, http.StatusUnauthorized, code, "a session from before the new password is refused")
+
+	a.now = func() time.Time { return t0.Add(20 * time.Second) }
+	_, code = call(a, subject)
+	assert.Equal(t, http.StatusOK, code, "signing in again after the change works")
+
+	// Tokens carry whole seconds: a session opened in the same second as the
+	// change, right after it, must not be refused.
+	store.users["bea"].validFrom = t0
+	_, code = call(a, subject)
+	assert.Equal(t, http.StatusOK, code)
 }
